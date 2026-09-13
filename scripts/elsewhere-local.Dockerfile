@@ -6,7 +6,7 @@ FROM rust:1@sha256:bf5a9aa29062a6cb03c49bd59a46eb55e3cc770caf598a221a7866e500be3
 RUN apt-get update && apt-get install -y --no-install-recommends \
     make git pkg-config cmake libavcodec-dev libavutil-dev libavfilter-dev \
     libswscale-dev libswresample-dev libavformat-dev libavdevice-dev libva-dev \
-    libpipewire-0.3-dev libclang-dev libgbm-dev libegl-dev libxkbcommon-dev \
+    libpipewire-0.3-dev libclang-dev libgbm-dev libegl-dev libxkbcommon-dev libglib2.0-bin \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
@@ -40,7 +40,7 @@ ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo PATH=/usr/local/ca
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential curl ca-certificates make git pkg-config cmake libavcodec-dev libavutil-dev libavfilter-dev \
     libswscale-dev libswresample-dev libavformat-dev libavdevice-dev libva-dev \
-    libpipewire-0.3-dev libclang-dev libgbm-dev libegl-dev libxkbcommon-dev \
+    libpipewire-0.3-dev libclang-dev libgbm-dev libegl-dev libxkbcommon-dev libglib2.0-bin \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
@@ -69,7 +69,7 @@ FROM archlinux:base-devel AS arch-build
 RUN pacman-key --init && pacman-key --populate archlinux \
     && pacman -Sy --noconfirm archlinux-keyring \
     && pacman -Syu --noconfirm --needed cargo nodejs npm ffmpeg libva \
-    mesa libxkbcommon libpipewire clang git \
+    mesa libxkbcommon libpipewire clang glib2 git \
     && rm -rf /var/cache/pacman/pkg/*
 RUN useradd -m builder && mkdir /out && chown builder:builder /out
 USER builder
