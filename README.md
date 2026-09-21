@@ -126,7 +126,7 @@ installation ID together with its sessions preserves Docker ownership checks.
 
 Creation validates package names, records the session, downloads a release package if it is not cached, and prepares a stock base image. It creates a labeled volume and container, then copies the setup scripts and package into the stopped container through the Docker API. This also works when Innkeeper runs inside Docker; the source files are read from Innkeeper's filesystem.
 
-Inside the session container, setup installs runtime services, prepares the user and runtime directories, and installs Elsewhere with `apt` or `pacman`. The package manager resolves the package's declared dependencies, including Debian recommendations. A separate script installs requested extra packages before Elsewhere starts. Innkeeper requires Elsewhere 0.10.1 and creates a private non-expiring internal credential with `elsewhere token create --admin` in the server's execution environment. It stores credentials privately and never includes them in startup logs, machine listings, or previews. Initialization includes authenticated token inventory. Browser tokens are created only through the CSRF-protected connect POST and are non-expiring. Previews use Innkeeper's internal credential. Setup and installation markers allow stopped sessions to restart without reinstalling packages.
+Inside the session container, setup installs runtime services, prepares the user and runtime directories, and installs Elsewhere with `apt` or `pacman`. The package manager resolves the package's declared dependencies, including Debian recommendations. A separate script installs requested extra packages before Elsewhere starts. Innkeeper requires Elsewhere 0.11.0 and creates a private non-expiring internal credential with `elsewhere token create --admin` in the server's execution environment. It stores credentials privately and never includes them in startup logs, machine listings, or previews. Initialization includes authenticated token inventory. Browser tokens are created only through the CSRF-protected connect POST and are non-expiring. Previews use Innkeeper's internal credential. Setup and installation markers allow stopped sessions to restart without reinstalling packages.
 
 All distributions include xterm for sessions with no extra packages. Sessions use VA-API on Intel/AMD or NVENC on NVIDIA when GPU access is enabled and software video encoding is off. Otherwise they use CPU encoders. Release packages are assumed compatible with the selected distribution; Innkeeper does not perform a separate binary or shared-library compatibility check.
 
@@ -480,7 +480,7 @@ INNKEEPER_ASSETS_DIR="$PWD" INNKEEPER_DATA_DIR="$PWD/data" ./elsewhere-innkeeper
 
 Docker must be installed and accessible to the account running Innkeeper.
 
-Elsewhere `0.10.1` advertises the assigned UDP port with hostname fallback. `INNKEEPER_RTC_ADDR` is an optional address override.
+Elsewhere advertises the assigned UDP port with hostname fallback. `INNKEEPER_RTC_ADDR` is an optional address override.
 
 ## Proxy verification
 

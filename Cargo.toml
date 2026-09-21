@@ -6,7 +6,7 @@ license = "MIT"
 description = "Manage isolated Elsewhere Docker desktops"
 
 [package.metadata.elsewhere]
-version = "0.10.1"
+version = "0.11.0"
 
 [package.metadata.deb]
 maintainer = "Elsewhere Innkeeper contributors <noreply@localhost>"
