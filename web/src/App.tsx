@@ -1,38 +1,41 @@
 // Innkeeper: the signed-in shell, the session data every page reads, and the routes between them.
+import type { ReactNode } from 'react';
+import type { Gpu, Layout, LoginResponse, Session, SessionAction, SessionClock, SessionsResponse, User } from './types.ts';
+import { errorMessage, readJson, responseError } from './types.ts';
 import { useEffect, useRef, useState } from 'react';
 import { ShieldAlert, Compass } from 'lucide-react';
-import { EmptyState } from './components/ui.jsx';
-import { Header } from './components/Header.jsx';
-import { Login } from './components/Login.jsx';
-import { SessionsPage } from './components/SessionsPage.jsx';
-import { SessionPage } from './components/SessionPage.jsx';
-import { NewSessionPage, SessionSettingsPage } from './components/SessionFormPage.jsx';
-import { AccountPage } from './components/AccountPage.jsx';
-import { NewUserPage, UserPage, UsersPage } from './components/Users.jsx';
-import { Link, useRoute } from './router.jsx';
+import { EmptyState } from './components/ui.tsx';
+import { Header } from './components/Header.tsx';
+import { Login } from './components/Login.tsx';
+import { SessionsPage } from './components/SessionsPage.tsx';
+import { SessionPage } from './components/SessionPage.tsx';
+import { NewSessionPage, SessionSettingsPage } from './components/SessionFormPage.tsx';
+import { AccountPage } from './components/AccountPage.tsx';
+import { NewUserPage, UserPage, UsersPage } from './components/Users.tsx';
+import { Link, useRoute } from './router.tsx';
 
 export function App() {
   const [version, setVersion] = useState('');
   const [localElsewhere, setLocalElsewhere] = useState(false);
-  const [gpus, setGpus] = useState([]);
-  const [gpuErrors, setGpuErrors] = useState([]);
+  const [gpus, setGpus] = useState<Gpu[]>([]);
+  const [gpuErrors, setGpuErrors] = useState<string[]>([]);
   const [token, setToken] = useState('');
-  const [user, setUser] = useState(null);
-  const [setupRequired, setSetupRequired] = useState(null);
+  const [user, setUser] = useState<User | null>(null);
+  const [setupRequired, setSetupRequired] = useState<boolean | null>(null);
   const [authenticated, setAuthenticated] = useState(false);
-  const [sessions, setSessions] = useState([]);
+  const [sessions, setSessions] = useState<Session[]>([]);
   const [loaded, setLoaded] = useState(false);
-  const [layout, setLayout] = useState(() => localStorage.getItem('innkeeper-layout') || 'grid');
+  const [layout, setLayout] = useState<Layout>(() => localStorage.getItem('innkeeper-layout') === 'list' ? 'list' : 'grid');
   const [error, setError] = useState('');
-  const [busy, setBusy] = useState({});
-  const loginClock = useRef(null);
+  const [busy, setBusy] = useState<Record<string, boolean>>({});
+  const loginClock = useRef<{ remaining: number; at: number } | null>(null);
   const clockOffset = useRef(0);
   const currentToken = useRef(token);
   currentToken.current = token;
   const route = useRoute();
   /// The instant the server would report now, so an elapsed time does not depend on this clock.
   const serverNow = () => Date.now() + clockOffset.current;
-  function acceptLogin(data) {
+  function acceptLogin(data: LoginResponse) {
     setUser(data.user);
     setToken(data.csrf_token);
     setAuthenticated(true);
@@ -45,18 +48,18 @@ export function App() {
       try {
         const response = await fetch('/api/me');
         if (response.ok) {
-          const data = await response.json();
+          const data = await readJson<LoginResponse>(response);
           if (live) acceptLogin(data);
         } else if (response.status === 401) {
           const setup = await fetch('/api/setup');
           if (!setup.ok) throw new Error('Account setup is unavailable.');
-          const data = await setup.json();
+          const data = await readJson<{ required: boolean }>(setup);
           if (live) setSetupRequired(data.required);
         } else throw new Error('Account service is unavailable.');
       } catch (e) {
         if (live) {
           setSetupRequired(false);
-          setError(e.message);
+          setError(errorMessage(e));
         }
       }
     })();
@@ -65,7 +68,7 @@ export function App() {
     };
   }, []);
   // The token comes from the ref, so a long-lived poller never sends a value the login has replaced.
-  async function api(path, options = {}) {
+  async function api(path: string, options: RequestInit = {}): Promise<Response> {
     const sent = currentToken.current;
     const response = await fetch(`/api${path}`, {
       ...options,
@@ -85,14 +88,14 @@ export function App() {
       throw new Error('Your session has ended. Sign in again.');
     }
     if (!response.ok) {
-      let body = await response.json().catch(() => ({}));
+      const body = await responseError(response);
       throw new Error(body.message || body.error || `Request failed (${response.status})`);
     }
-    return response.status === 204 ? null : response;
+    return response;
   }
-  async function refresh(signal) {
+  async function refresh(signal?: AbortSignal) {
     const response = await api('/sessions', { signal });
-    const data = await response.json();
+    const data = await readJson<SessionsResponse>(response);
     if (currentToken.current !== token || signal?.aborted) return;
     setSessions(data.sessions);
     setGpus(data.gpus);
@@ -113,7 +116,7 @@ export function App() {
       try {
         await refresh(controller.signal);
       } catch (e) {
-        if (live) setError(e.message);
+        if (live) setError(errorMessage(e));
       } finally {
         inflight = false;
       }
@@ -130,14 +133,14 @@ export function App() {
     localStorage.setItem('innkeeper-layout', layout);
   }, [layout]);
   /// Run one machine action, keeping the session marked busy until the list reflects it.
-  async function action(session, kind) {
+  async function action(session: Session, kind: SessionAction) {
     setBusy(b => ({ ...b, [session.id]: true }));
     setError('');
     try {
       await api(`/sessions/${session.id}${kind === 'destroy' ? '' : `/${kind}`}`, { method: kind === 'destroy' ? 'DELETE' : 'POST' });
       await refresh();
     } catch (e) {
-      setError(e.message);
+      setError(errorMessage(e));
     } finally {
       setBusy(b => {
         const next = { ...b };
@@ -146,7 +149,7 @@ export function App() {
       });
     }
   }
-  function openSession(session) {
+  function openSession(session: Session) {
     window.open(`/api/sessions/${session.id}/connect`, '_blank', 'noopener,noreferrer');
   }
   useEffect(() => {
@@ -158,7 +161,7 @@ export function App() {
       inflight = true;
       try {
         const response = await api('/me');
-        const data = await response.json();
+        const data = await readJson<LoginResponse>(response);
         if (!live) return;
         setUser(data.user);
         clockOffset.current = data.server_time_ms - Date.now();
@@ -169,11 +172,11 @@ export function App() {
         loginClock.current = { remaining: data.session_expires_at_ms - data.server_time_ms, at: performance.now() };
         if (loginClock.current.remaining > 0 && loginClock.current.remaining <= 2 * 86400000) {
           const renewal = await api('/session/renew', { method: 'POST' });
-          const renewed = await renewal.json();
+          const renewed = await readJson<SessionClock>(renewal);
           if (live) loginClock.current = { remaining: renewed.session_expires_at_ms - renewed.server_time_ms, at: performance.now() };
         }
       } catch (e) {
-        if (live) setError(e.message);
+        if (live) setError(errorMessage(e));
       } finally {
         inflight = false;
       }
@@ -191,7 +194,7 @@ export function App() {
       document.removeEventListener('visibilitychange', renew);
     };
   }, [token]);
-  if (!authenticated)
+  if (!authenticated || !user)
     return (
       <Login
         required={setupRequired}
@@ -204,22 +207,22 @@ export function App() {
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(input),
             });
-            const data = await response.json();
             if (!response.ok) {
+              const data = await responseError(response);
               if (data.error === 'setup_complete') setSetupRequired(false);
               throw new Error(data.message || 'Sign in failed.');
             }
-            acceptLogin(data);
+            acceptLogin(await readJson<LoginResponse>(response));
             const destination = new URLSearchParams(location.search).get('return');
             if (destination && /^\/api\/sessions\/[0-9a-f-]{36}\/connect$/.test(destination)) location.replace(destination);
           } catch (e) {
-            setError(e.message);
+            setError(errorMessage(e));
           }
         }}
       />
     );
-  const administrator = user?.role === 'administrator';
-  const guarded = page =>
+  const administrator = user.role === 'administrator';
+  const guarded = (page: ReactNode) =>
     administrator ? (
       page
     ) : (
@@ -229,7 +232,7 @@ export function App() {
         </Link>
       </EmptyState>
     );
-  function page() {
+  const page = () => {
     switch (route.name) {
       case 'sessions':
         return (
@@ -290,7 +293,7 @@ export function App() {
           try {
             await api('/logout', { method: 'POST' });
           } catch (e) {
-            setError(e.message);
+            setError(errorMessage(e));
             return;
           }
           currentToken.current = '';

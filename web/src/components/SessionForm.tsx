@@ -1,9 +1,22 @@
 // The settings a session is created with, and the subset that can be changed afterwards.
+import type { Distribution, Gpu, ManagedSession, ScreenSize, SessionProfile } from '../types.ts';
+import { errorMessage, isRecord } from '../types.ts';
 import { useRef, useState } from 'react';
-import { Alert, Disclosure, Field, FormActions, Section } from './ui.jsx';
-import { Link } from '../router.jsx';
+import { Alert, Disclosure, Field, FormActions, Section } from './ui.tsx';
+import { Link } from '../router.tsx';
 
-const defaultProfile = {
+function isDistribution(value: unknown): value is Distribution {
+  return value === 'arch' || value === 'debian' || value === 'ubuntu';
+}
+function isStringList(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item: unknown) => typeof item === 'string');
+}
+function isScreenSize(value: unknown): value is ScreenSize {
+  return isRecord(value) && Object.keys(value).every(key => key === 'width' || key === 'height') &&
+    [value.width, value.height].every(n => typeof n === 'number' && Number.isInteger(n) && n >= 2 && n <= 8192 && n % 2 === 0);
+}
+
+const defaultProfile: SessionProfile = {
   name: '',
   distribution: 'arch',
   packages: [],
@@ -19,38 +32,38 @@ const screenPresets = ['1280x720', '1920x1080', '2560x1440', '3840x2160'];
 
 /// `note` says what saving does; `blocked`, when set, replaces it with why it cannot and holds the
 /// commit back.
-export function SessionForm({ submit, error, initial, gpus = [], gpuErrors = [], administrator = false, cancelTo, note = '', blocked = '' }) {
+export function SessionForm({ submit, error, initial, gpus = [], gpuErrors = [], administrator = false, cancelTo, note = '', blocked = '' }: { submit: (profile: SessionProfile) => Promise<void>; error: string; initial?: ManagedSession; gpus?: Gpu[]; gpuErrors?: string[]; administrator?: boolean; cancelTo: string; note?: string; blocked?: string }) {
   const gpuAvailable = gpus.length > 0;
   const defaults = { ...defaultProfile, gpu_access: gpuAvailable, gpu_id: gpus[0]?.id ?? null, software_encoding: !gpuAvailable };
-  const [profile, setProfile] = useState(initial || defaults);
+  const [profile, setProfile] = useState<SessionProfile>(initial || defaults);
   const [packages, setPackages] = useState(initial?.packages.join(' ') || '');
-  const [dockerArgs, setDockerArgs] = useState(initial?.docker_args?.join('\n') || '');
+  const [dockerArgs, setDockerArgs] = useState(initial?.docker_args.join('\n') || '');
   const initialSize = initial?.screen_size;
   const initialPreset = initialSize ? `${initialSize.width}x${initialSize.height}` : 'dynamic';
   const [screen, setScreen] = useState(initialSize && !screenPresets.includes(initialPreset) ? 'custom' : initialPreset);
-  const [width, setWidth] = useState(initialSize?.width ?? 1920);
-  const [height, setHeight] = useState(initialSize?.height ?? 1080);
+  const [width, setWidth] = useState<number | string>(initialSize?.width ?? 1920);
+  const [height, setHeight] = useState<number | string>(initialSize?.height ?? 1080);
   const [text, setText] = useState('');
   const [importError, setImportError] = useState('');
-  const importPanel = useRef(null);
+  const importPanel = useRef<HTMLDetailsElement>(null);
   const [pending, setPending] = useState(false);
-  function change(key, value) {
+  function change<K extends keyof SessionProfile>(key: K, value: SessionProfile[K]) {
     setProfile(p => ({ ...p, [key]: value }));
   }
   function importProfile() {
     try {
-      const value = JSON.parse(text);
-      if (!value || Array.isArray(value) || typeof value !== 'object' || Object.keys(value).some(key => !Object.hasOwn(defaultProfile, key))) {
+      const value: unknown = JSON.parse(text);
+      if (!isRecord(value) || Object.keys(value).some(key => !Object.hasOwn(defaultProfile, key))) {
         throw new Error('Profile must be an object containing session settings only.');
       }
-      const p = { ...defaults, ...value };
+      const p: Record<string, unknown> = { ...defaults, ...value };
       if (
         typeof p.name !== 'string' ||
-        !['arch', 'debian', 'ubuntu'].includes(p.distribution) ||
-        !Array.isArray(p.packages) ||
-        p.packages.some(item => typeof item !== 'string' || /\s/.test(item)) ||
-        !Array.isArray(p.docker_args) ||
-        p.docker_args.some(arg => typeof arg !== 'string' || /[\r\n\0]/.test(arg)) ||
+        !isDistribution(p.distribution) ||
+        !isStringList(p.packages) ||
+        p.packages.some(item => /\s/.test(item)) ||
+        !isStringList(p.docker_args) ||
+        p.docker_args.some(arg => /[\r\n\0]/.test(arg)) ||
         typeof p.startup_command !== 'string' ||
         typeof p.kiosk !== 'boolean' ||
         typeof p.gpu_access !== 'boolean' ||
@@ -60,20 +73,20 @@ export function SessionForm({ submit, error, initial, gpus = [], gpuErrors = [],
         throw new Error('Invalid profile field types.');
       }
       if (
-        p.screen_size !== null &&
-        (typeof p.screen_size !== 'object' ||
-          Array.isArray(p.screen_size) ||
-          Object.keys(p.screen_size).some(key => !['width', 'height'].includes(key)) ||
-          ![p.screen_size.width, p.screen_size.height].every(n => Number.isInteger(n) && n >= 2 && n <= 8192 && n % 2 === 0))
+        p.screen_size !== null && !isScreenSize(p.screen_size)
       ) {
         throw new Error('Screen dimensions must be even numbers between 2 and 8192.');
       }
       if (!p.gpu_access && value.gpu_id != null) throw new Error('GPU selection requires GPU access.');
       if (p.gpu_access && !gpuAvailable) throw new Error('No host GPU is available.');
       if (p.gpu_access && p.gpu_id !== null && !gpus.some(g => g.id === p.gpu_id)) throw new Error('Selected GPU is unavailable.');
-      p.gpu_id = p.gpu_access ? (p.gpu_id ?? gpus[0].id) : null;
-      p.software_encoding ||= !p.gpu_access;
-      setProfile(p);
+      const gpuId = p.gpu_access ? (p.gpu_id ?? gpus[0]?.id ?? null) : null;
+      const softwareEncoding = p.software_encoding || !p.gpu_access;
+      setProfile({
+        name: p.name, distribution: p.distribution, packages: p.packages, docker_args: p.docker_args,
+        startup_command: p.startup_command, kiosk: p.kiosk, gpu_access: p.gpu_access,
+        gpu_id: gpuId, software_encoding: softwareEncoding, screen_size: p.screen_size,
+      });
       setPackages(p.packages.join(' '));
       setDockerArgs(p.docker_args.join('\n'));
       const size = p.screen_size;
@@ -84,7 +97,7 @@ export function SessionForm({ submit, error, initial, gpus = [], gpuErrors = [],
       setImportError('');
       setText('');
     } catch (e) {
-      setImportError(e.message);
+      setImportError(errorMessage(e));
     }
   }
   return (
@@ -92,7 +105,7 @@ export function SessionForm({ submit, error, initial, gpus = [], gpuErrors = [],
       onSubmit={async event => {
         event.preventDefault();
         if (text.trim()) {
-          importPanel.current.open = true;
+          if (importPanel.current) importPanel.current.open = true;
           setImportError(message => message || 'Apply or clear the pasted profile before creating a session.');
           return;
         }
@@ -161,7 +174,7 @@ export function SessionForm({ submit, error, initial, gpus = [], gpuErrors = [],
                 disabled={!!initial}
                 name="distribution"
                 value={profile.distribution}
-                onChange={e => change('distribution', e.target.value)}
+                onChange={e => { if (isDistribution(e.target.value)) change('distribution', e.target.value); }}
               >
                 <option value="arch">Arch Linux · rolling base</option>
                 <option value="debian">Debian 13</option>

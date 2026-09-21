@@ -1,12 +1,13 @@
 // A modal dialog: the native element, so Escape, the backdrop and the focus trap come from the browser.
+import type { ReactNode } from 'react';
 import { useEffect, useRef } from 'react';
 import { X } from 'lucide-react';
-import { IconButton, cx } from './ui.jsx';
+import { IconButton, cx } from './ui.tsx';
 
-export function Dialog({ title, close, children }) {
-  const ref = useRef(null);
+export function Dialog({ title, close, children }: { title: string; close: () => void; children: ReactNode }) {
+  const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
-    ref.current.showModal();
+    ref.current?.showModal();
   }, []);
   return (
     <dialog
@@ -29,7 +30,7 @@ export function Dialog({ title, close, children }) {
 
 /// The question asked before an action that closes applications or discards data. `disabled` holds
 /// the answer back while the machine's state no longer allows it.
-export function Confirm({ title, label, tone = 'primary', disabled = false, close, confirm, children }) {
+export function Confirm({ title, label, tone = 'primary', disabled = false, close, confirm, children }: { title: string; label: string; tone?: 'primary' | 'danger'; disabled?: boolean; close: () => void; confirm: () => void; children: ReactNode }) {
   return (
     <Dialog title={title} close={close}>
       <p className="p-4 text-sm">{children}</p>

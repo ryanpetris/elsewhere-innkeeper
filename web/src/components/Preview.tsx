@@ -1,16 +1,17 @@
 // The authenticated desktop preview. Captures are queued so a full page of sessions cannot flood the server.
+import type { Api, Session } from '../types.ts';
 import { useEffect, useRef, useState } from 'react';
 import { Monitor } from 'lucide-react';
-import { cx } from './ui.jsx';
+import { cx } from './ui.tsx';
 
 let active = 0;
-const queue = [];
-function enqueue(task) {
+const queue: (() => Promise<void>)[] = [];
+function enqueue(task: () => Promise<void>) {
   queue.push(task);
   function drain() {
     while (active < 2 && queue.length) {
       active++;
-      Promise.resolve(queue.shift()()).finally(() => {
+      Promise.resolve(queue.shift()?.()).finally(() => {
         active--;
         drain();
       });
@@ -20,8 +21,8 @@ function enqueue(task) {
 }
 
 /// `interval` is the refresh period in milliseconds; the server allows one capture every two seconds.
-export function Preview({ session, api, interval = 5000, className = '', glyph = 'size-7', label = true }) {
-  const ref = useRef(null);
+export function Preview({ session, api, interval = 5000, className = '', glyph = 'size-7', label = true }: { session: Session; api: Api; interval?: number; className?: string; glyph?: string; label?: boolean }) {
+  const ref = useRef<HTMLDivElement>(null);
   const [url, setUrl] = useState('');
   const urlRef = useRef('');
   useEffect(
@@ -49,6 +50,7 @@ export function Preview({ session, api, interval = 5000, className = '', glyph =
           return;
         }
         try {
+          if (!ref.current) return;
           const width = Math.min(1600, Math.max(1, Math.ceil(ref.current.clientWidth * devicePixelRatio)));
           const r = await api(`/sessions/${session.id}/preview?width=${width}`, { signal: controller.signal });
           const blob = await r.blob();
@@ -65,10 +67,10 @@ export function Preview({ session, api, interval = 5000, className = '', glyph =
       });
     }
     const observer = new IntersectionObserver(entries => {
-      visible = entries[0].isIntersecting;
+      visible = entries[0]?.isIntersecting ?? false;
       if (visible) capture();
     });
-    observer.observe(ref.current);
+    if (ref.current) observer.observe(ref.current);
     const timer = setInterval(capture, interval);
     document.addEventListener('visibilitychange', capture);
     return () => {

@@ -1,21 +1,23 @@
 // Who else may reach this machine, and how far their access goes.
+import type { Api, Assignment, Session, User } from '../types.ts';
+import { errorMessage, readJson } from '../types.ts';
 import { useEffect, useState } from 'react';
-import { Alert, Badge, Loading, Section } from './ui.jsx';
+import { Alert, Badge, Loading, Section } from './ui.tsx';
 
-export function Sharing({ api, machine }) {
-  const [users, setUsers] = useState(null);
-  const [assignments, setAssignments] = useState([]);
+export function Sharing({ api, machine }: { api: Api; machine: Session }) {
+  const [users, setUsers] = useState<User[] | null>(null);
+  const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   async function reload() {
-    const [u, a] = await Promise.all([api('/users').then(r => r.json()), api(`/sessions/${machine.id}/access`).then(r => r.json())]);
+    const [u, a] = await Promise.all([api('/users').then(readJson<{ users: User[] }>), api(`/sessions/${machine.id}/access`).then(readJson<{ assignments: Assignment[] }>)]);
     setUsers(u.users);
     setAssignments(a.assignments);
   }
   // Assignments another administrator changes appear on return to the tab.
   useEffect(() => {
     const refresh = () => {
-      if (!document.hidden) reload().catch(e => setError(e.message));
+      if (!document.hidden) reload().catch((e: unknown) => setError(errorMessage(e)));
     };
     refresh();
     addEventListener('focus', refresh);
@@ -45,9 +47,10 @@ export function Sharing({ api, machine }) {
               disabled={busy}
               value={assignments.find(a => a.user_id === user.id)?.role || ''}
               onChange={async e => {
+                const role = e.target.value;
+                if (role !== '' && role !== 'viewer' && role !== 'interactive' && role !== 'manager') return;
                 setBusy(true);
                 setError('');
-                const role = e.target.value;
                 try {
                   await api(`/sessions/${machine.id}/access/${user.id}`, {
                     method: role ? 'PUT' : 'DELETE',
@@ -55,7 +58,7 @@ export function Sharing({ api, machine }) {
                   });
                   await reload();
                 } catch (e) {
-                  setError(e.message);
+                  setError(errorMessage(e));
                 } finally {
                   setBusy(false);
                 }

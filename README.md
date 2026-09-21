@@ -179,6 +179,10 @@ Edit `/etc/elsewhere-innkeeper/environment` to configure native installations an
 
 ## Development
 
+The web frontend uses React and strict TypeScript. `npm run build` in `web/` runs the
+type checker before bundling; `npm run typecheck` runs the checker alone. The Docker
+web stage runs the same build.
+
 ```sh
 docker build --target check .
 ```
@@ -512,8 +516,9 @@ that links to the session, navigation and browser history, the name and state fi
 that stay closed while a session cannot save them, a creation that answers after its form is
 abandoned, and the reduced session page a non-manager receives.
 `scripts/check-accounts-browser.mjs` checks the account pages: the directory, per-account identity
-across a history jump between two accounts, the save payload, deletion, password rules, and the
-Administrator guards. Mount each at the matching path under `/src/scripts/`.
+across a history jump between two accounts, creation and update payloads, deletion, password
+changes and resets, sign-in, setup confirmation, and Administrator guards.
+Mount each at the matching path under `/src/scripts/`.
 
 Each browser check serves the response headers Innkeeper serves, including its Content Security
 Policy, and fails on any resource the browser refuses. Keep those headers in step with `asset` in

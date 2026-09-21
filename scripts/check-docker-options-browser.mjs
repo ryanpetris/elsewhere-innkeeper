@@ -95,16 +95,27 @@ try {
     assert.equal(await options.inputValue(), dockerArgs.join('\n'));
     assert.equal(await page.getByLabel('Session name').inputValue(), 'Steam');
   }
+  for (const screen_size of [[], '1920x1080', { width: 1920 }, { width: '1920', height: 1080 }, { width: 1921, height: 1080 }, { width: 1920, height: 1080, extra: true }]) {
+    await importProfile({ name: 'Invalid dimensions', screen_size });
+    assert.equal(await page.locator('form').getByRole('alert').innerText(), 'Screen dimensions must be even numbers between 2 and 8192.');
+    assert.equal(await page.getByLabel('Session name').inputValue(), 'Steam');
+  }
   await importProfile({name:'Disabled GPU',gpu_access:false,gpu_id:nvidia.id});
   assert.equal(await page.locator('form').getByRole('alert').innerText(), 'GPU selection requires GPU access.');
   await importProfile({name:'Missing GPU', gpu_id:'not-a-device'});
   assert.equal(await page.locator('form').getByRole('alert').innerText(), 'Selected GPU is unavailable.');
-  await importProfile({ name: 'Basic profile', distribution: 'ubuntu', gpu_access: false, software_encoding: false });
+  await importProfile({ name: 'Preset display', screen_size: { width: 1920, height: 1080 } });
+  assert.equal(await page.locator('select').filter({ has: page.locator('option[value=dynamic]') }).inputValue(), '1920x1080');
+  await importProfile({ name: 'Basic profile', distribution: 'ubuntu', gpu_access: false, software_encoding: false, screen_size: { width: 1366, height: 768 } });
+  assert.equal(await page.locator('select').filter({ has: page.locator('option[value=dynamic]') }).inputValue(), 'custom');
+  assert.equal(await page.getByLabel('Width', { exact: true }).inputValue(), '1366');
+  assert.equal(await page.getByLabel('Height', { exact: true }).inputValue(), '768');
   assert.equal(await options.inputValue(), '');
   const basicRequest = page.waitForRequest(request => request.method() === 'POST' && new URL(request.url()).pathname === '/api/sessions');
   await page.getByRole('button', { name: 'Create Session', exact: true }).click();
   const basic = (await basicRequest).postDataJSON();
   assert.deepEqual(basic.docker_args, []);
+  assert.deepEqual(basic.screen_size, { width: 1366, height: 768 });
   assert.equal(basic.gpu_access, false);
   assert.equal(basic.gpu_id, null);
   assert.equal(basic.software_encoding, true);

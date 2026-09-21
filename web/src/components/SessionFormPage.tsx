@@ -1,14 +1,17 @@
 // Creating a session, and changing the settings of one that exists, each on a page of its own.
+import type { ReactNode } from 'react';
+import type { Api, Gpu, Session, SessionSettings, User } from '../types.ts';
+import { errorMessage, readJson } from '../types.ts';
 import { useState } from 'react';
-import { EmptyState, Loading, PageHeader } from './ui.jsx';
-import { Link, leave } from '../router.jsx';
-import { SessionForm } from './SessionForm.jsx';
-import { pendingNote, settled } from './session.jsx';
+import { EmptyState, Loading, PageHeader } from './ui.tsx';
+import { Link, leave } from '../router.tsx';
+import { SessionForm } from './SessionForm.tsx';
+import { pendingNote, settled } from './session.tsx';
 
 /// Forms sit in a single column so the eye has one place to go.
-const Column = ({ children }) => <div className="mx-auto flex w-full max-w-3xl flex-col gap-7">{children}</div>;
+const Column = ({ children }: { children: ReactNode }) => <div className="mx-auto flex w-full max-w-3xl flex-col gap-7">{children}</div>;
 
-export function NewSessionPage({ api, user, refresh, loaded, gpus, gpuErrors }) {
+export function NewSessionPage({ api, user, refresh, loaded, gpus, gpuErrors }: { api: Api; user: User; refresh: () => Promise<void>; loaded: boolean; gpus: Gpu[]; gpuErrors: string[] }) {
   const [error, setError] = useState('');
   const here = '/sessions/new';
   if (!loaded) return <Loading>Loading session options…</Loading>;
@@ -18,17 +21,17 @@ export function NewSessionPage({ api, user, refresh, loaded, gpus, gpuErrors }) 
       <SessionForm
         gpus={gpus}
         gpuErrors={gpuErrors}
-        administrator={user?.role === 'administrator'}
+        administrator={user.role === 'administrator'}
         error={error}
         cancelTo="/"
         submit={async profile => {
           setError('');
           try {
-            const created = await (await api('/sessions', { method: 'POST', body: JSON.stringify(profile) })).json();
+            const created = await readJson<{ id: string }>(await api('/sessions', { method: 'POST', body: JSON.stringify(profile) }));
             await refresh();
-            leave(here, created?.id ? `/sessions/${created.id}` : '/');
+            leave(here, `/sessions/${created.id}`);
           } catch (e) {
-            setError(e.message);
+            setError(errorMessage(e));
           }
         }}
       />
@@ -36,7 +39,7 @@ export function NewSessionPage({ api, user, refresh, loaded, gpus, gpuErrors }) 
   );
 }
 
-export function SessionSettingsPage({ id, sessions, loaded, api, refresh }) {
+export function SessionSettingsPage({ id, sessions, loaded, api, refresh }: { id: string; sessions: Session[]; loaded: boolean; api: Api; refresh: () => Promise<void> }) {
   const [error, setError] = useState('');
   const s = sessions.find(item => item.id === id);
   if (!s || s.access_role !== 'manager')
@@ -82,12 +85,12 @@ export function SessionSettingsPage({ id, sessions, loaded, api, refresh }) {
                 kiosk: profile.kiosk,
                 software_encoding: profile.software_encoding,
                 startup_command: profile.startup_command,
-              }),
+              } satisfies SessionSettings),
             });
             await refresh();
             leave(here, back);
           } catch (e) {
-            setError(e.message);
+            setError(errorMessage(e));
           }
         }}
       />

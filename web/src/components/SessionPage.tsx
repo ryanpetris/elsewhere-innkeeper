@@ -1,18 +1,20 @@
 // One session in full: what it is, how it is doing, and every action grouped by what it changes.
+import type { ReactNode } from 'react';
+import type { Api, Session, SessionActions, User } from '../types.ts';
 import { useState } from 'react';
 import { ExternalLink, Loader2, Play, RotateCw, SlidersHorizontal, Square, Trash2, Wrench } from 'lucide-react';
-import { DataList, Disclosure, EmptyState, Loading, PageHeader, Section } from './ui.jsx';
-import { Confirm } from './Dialog.jsx';
-import { Link, navigate } from '../router.jsx';
-import { Preview } from './Preview.jsx';
-import { Logs } from './Logs.jsx';
-import { Sharing } from './Sharing.jsx';
-import { StatusBadge, busyState, distribution, elapsed, installLabel, pendingNote, screenLabel, settled, stageLabel } from './session.jsx';
+import { DataList, Disclosure, EmptyState, Loading, PageHeader, Section } from './ui.tsx';
+import { Confirm } from './Dialog.tsx';
+import { Link, navigate } from '../router.tsx';
+import { Preview } from './Preview.tsx';
+import { Logs } from './Logs.tsx';
+import { Sharing } from './Sharing.tsx';
+import { StatusBadge, busyState, distribution, elapsed, installLabel, pendingNote, screenLabel, settled, stageLabel } from './session.tsx';
 
 /// The actions a section ends with.
-const Actions = ({ children }) => <div className="flex flex-wrap items-center gap-2 border-t border-line px-4 py-3">{children}</div>;
+const Actions = ({ children }: { children: ReactNode }) => <div className="flex flex-wrap items-center gap-2 border-t border-line px-4 py-3">{children}</div>;
 
-export function SessionPage({ id, sessions, loaded, user, api, busy, now, onOpen, onAction }) {
+export function SessionPage({ id, sessions, loaded, user, api, busy, now, onOpen, onAction }: SessionActions & { id: string; sessions: Session[]; loaded: boolean; user: User; api: Api; now: () => number }) {
   const [confirming, setConfirming] = useState('');
   const s = sessions.find(item => item.id === id);
   if (!s)
@@ -91,12 +93,12 @@ export function SessionPage({ id, sessions, loaded, user, api, busy, now, onOpen
         </div>
 
         <div className="flex min-w-0 flex-col gap-5">
-          {s.status === 'running' && (s.started_ms > 0 || (manages && s.port > 0)) && (
+          {s.status === 'running' && manages && (s.started_ms > 0 || s.port > 0) && (
             <Section title="Runtime">
               <DataList
                 items={[
                   s.started_ms > 0 && { label: 'Launched', value: `${elapsed(s.started_ms, now)} ago` },
-                  manages && s.port > 0 && { label: 'Port', value: <code className="font-mono">{s.port}</code> },
+                  s.port > 0 && { label: 'Port', value: <code className="font-mono">{s.port}</code> },
                 ]}
               />
             </Section>
@@ -123,7 +125,7 @@ export function SessionPage({ id, sessions, loaded, user, api, busy, now, onOpen
             <DataList
               items={[
                 { label: 'Distribution', value: distribution(s) },
-                manages && { label: 'Packages', value: s.packages?.length ? s.packages.join(', ') : <span className="text-ink-4">None</span> },
+                manages && { label: 'Packages', value: s.packages.length ? s.packages.join(', ') : <span className="text-ink-4">None</span> },
                 manages && { label: 'Screen size', value: screenLabel(s) },
                 manages && { label: 'GPU access', value: s.gpu_access ? 'On' : 'Off' },
                 manages && s.gpu && { label: 'GPU', value: `${s.gpu.driver} · ${s.gpu.id}` },
@@ -134,7 +136,7 @@ export function SessionPage({ id, sessions, loaded, user, api, busy, now, onOpen
                   value: s.startup_command ? <code className="font-mono">{s.startup_command}</code> : <span className="text-ink-4">None</span>,
                 },
                 manages &&
-                  s.docker_args?.length > 0 && {
+                  s.docker_args.length > 0 && {
                     label: 'Docker options',
                     value: <code className="font-mono whitespace-pre-wrap">{s.docker_args.join('\n')}</code>,
                   },
@@ -166,7 +168,7 @@ export function SessionPage({ id, sessions, loaded, user, api, busy, now, onOpen
 
       <div className="mt-5 flex flex-col gap-5 empty:mt-0">
         {manages && <Logs api={api} session={s} />}
-        {user?.role === 'administrator' && <Sharing api={api} machine={s} />}
+        {user.role === 'administrator' && <Sharing api={api} machine={s} />}
         {manages && (
           <Disclosure label="Danger Zone" danger>
             <div className="flex flex-wrap items-center gap-2 px-4 py-3">

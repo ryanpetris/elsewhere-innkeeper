@@ -1,8 +1,10 @@
 // Sign in, or create the first Administrator when the instance has no accounts yet.
+import type { LoginInput } from '../types.ts';
+import { formText } from '../types.ts';
 import { Loader2 } from 'lucide-react';
-import { Field, Logo } from './ui.jsx';
+import { Field, Logo } from './ui.tsx';
 
-export function Login({ required, error, submit }) {
+export function Login({ required, error, submit }: { required: boolean | null; error: string; submit: (input: LoginInput) => Promise<void> }) {
   return (
     <main className="flex min-h-dvh items-center justify-center bg-canvas p-4 font-sans text-ink-2">
       <div className="w-[27rem] max-w-full animate-pop rounded-2xl border border-line-2 bg-surface p-6 shadow-pop sm:p-7">
@@ -26,14 +28,17 @@ export function Login({ required, error, submit }) {
               e.preventDefault();
               const form = e.currentTarget;
               const fields = new FormData(form);
-              const input = { username: fields.get('username'), password: fields.get('password') };
+              const input: LoginInput = { username: formText(form, 'username'), password: formText(form, 'password') };
               if (required) {
                 if (fields.get('confirmation') !== input.password) {
-                  form.confirmation.setCustomValidity('Passwords differ.');
-                  form.confirmation.reportValidity();
+                  const confirmation = form.elements.namedItem('confirmation');
+                  if (confirmation instanceof HTMLInputElement) {
+                    confirmation.setCustomValidity('Passwords differ.');
+                    confirmation.reportValidity();
+                  }
                   return;
                 }
-                input.display_name = fields.get('display_name');
+                input.display_name = formText(form, 'display_name');
               }
               await submit(input);
             }}
@@ -51,7 +56,7 @@ export function Login({ required, error, submit }) {
             </Field>
             {required && (
               <Field label="Confirm password">
-                <input className="input h-9" type="password" name="confirmation" autoComplete="new-password" required onInput={e => e.target.setCustomValidity('')} />
+                <input className="input h-9" type="password" name="confirmation" autoComplete="new-password" required onInput={e => e.currentTarget.setCustomValidity('')} />
               </Field>
             )}
             <button type="submit" className="btn btn-primary mt-1 h-10 w-full">{required ? 'Create Administrator' : 'Sign In'}</button>

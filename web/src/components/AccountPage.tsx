@@ -1,17 +1,19 @@
 // Your own account: the name other people see, and the password that reaches it.
+import type { Api, User } from '../types.ts';
+import { errorMessage, formText, readJson } from '../types.ts';
 import { useState } from 'react';
-import { Alert, Badge, DataList, Field, PageHeader, Section } from './ui.jsx';
+import { Alert, Badge, DataList, Field, PageHeader, Section } from './ui.tsx';
 
-export function AccountPage({ api, user, changed }) {
+export function AccountPage({ api, user, changed }: { api: Api; user: User; changed: (user: User) => void }) {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-  async function perform(work) {
+  async function perform(work: () => Promise<void>) {
     setBusy(true);
     setError('');
     try {
       await work();
     } catch (e) {
-      setError(e.message);
+      setError(errorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -39,9 +41,9 @@ export function AccountPage({ api, user, changed }) {
           className="flex flex-col gap-4 border-t border-line p-4"
           onSubmit={e => {
             e.preventDefault();
-            const display_name = e.currentTarget.display_name.value;
+            const display_name = formText(e.currentTarget, 'display_name');
             perform(async () => {
-              const result = await (await api('/me', { method: 'PATCH', body: JSON.stringify({ display_name }) })).json();
+              const result = await readJson<{ user: User }>(await api('/me', { method: 'PATCH', body: JSON.stringify({ display_name }) }));
               changed(result.user);
             });
           }}
@@ -60,11 +62,11 @@ export function AccountPage({ api, user, changed }) {
           className="flex flex-col gap-4 p-4"
           onSubmit={e => {
             e.preventDefault();
-            const data = new FormData(e.currentTarget);
+            const input = { current_password: formText(e.currentTarget, 'current_password'), password: formText(e.currentTarget, 'password') };
             perform(async () => {
               await api('/me/password', {
                 method: 'PUT',
-                body: JSON.stringify({ current_password: data.get('current_password'), password: data.get('password') }),
+                body: JSON.stringify(input),
               });
               location.reload();
             });

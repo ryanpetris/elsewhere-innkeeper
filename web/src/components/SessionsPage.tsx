@@ -1,10 +1,13 @@
 // The workspace: every session the signed-in account may reach, as a grid of previews or a dense list.
+import type { Api, Layout, Session, SessionActions } from '../types.ts';
 import { useState } from 'react';
 import { ChevronRight, ExternalLink, Grid2X2, List, Loader2, Monitor, Play, Plus, Search } from 'lucide-react';
-import { EmptyState, IconButton, Loading, PageHeader } from './ui.jsx';
-import { Link } from '../router.jsx';
-import { Preview } from './Preview.jsx';
-import { StatusBadge, busyState, distribution, stageLabel } from './session.jsx';
+import { EmptyState, IconButton, Loading, PageHeader } from './ui.tsx';
+import { Link } from '../router.tsx';
+import { Preview } from './Preview.tsx';
+import { StatusBadge, busyState, distribution, stageLabel } from './session.tsx';
+
+type CardProps = SessionActions & { s: Session; api: Api };
 
 const FILTERS = [
   ['all', 'All States'],
@@ -16,7 +19,7 @@ const FILTERS = [
   ['cancelled', 'Cancelled'],
 ];
 
-export function SessionsPage({ sessions, loaded, api, layout, setLayout, busy, onOpen, onAction }) {
+export function SessionsPage({ sessions, loaded, api, layout, setLayout, busy, onOpen, onAction }: SessionActions & { sessions: Session[]; loaded: boolean; api: Api; layout: Layout; setLayout: (layout: Layout) => void }) {
   const [search, setSearch] = useState('');
   const [state, setState] = useState('all');
   const query = search.trim().toLowerCase();
@@ -111,7 +114,7 @@ export function SessionsPage({ sessions, loaded, api, layout, setLayout, busy, o
 }
 
 /// The one action worth reaching for without opening the session.
-function QuickAction({ s, busy, onOpen, onAction }) {
+function QuickAction({ s, busy, onOpen, onAction }: Omit<CardProps, 'api'>) {
   if (s.status === 'running')
     return (
       <button type="button" className="btn btn-primary btn-sm relative" disabled={busy[s.id]} onClick={() => onOpen(s)}>
@@ -130,7 +133,7 @@ function QuickAction({ s, busy, onOpen, onAction }) {
 }
 
 /// The step a session announces while it is working, in place of its package list.
-const Stage = ({ s }) => (
+const Stage = ({ s }: { s: Session }) => (
   <p role="status" className="flex items-center gap-1.5 truncate text-xs text-warn">
     <Loader2 className="size-3 shrink-0 animate-spin" />
     {stageLabel(s)}…
@@ -138,7 +141,7 @@ const Stage = ({ s }) => (
 );
 
 // `session` is the marker the browser checks select cards by; it carries no styling.
-function SessionTile({ s, api, busy, onOpen, onAction }) {
+function SessionTile({ s, api, busy, onOpen, onAction }: CardProps) {
   return (
     <article className="session card group relative flex flex-col overflow-hidden transition-colors hover:border-line-2 [overflow-wrap:anywhere]">
       <Preview session={s} api={api} className="aspect-video border-b border-line" />
@@ -158,7 +161,7 @@ function SessionTile({ s, api, busy, onOpen, onAction }) {
         ) : (
           <p className="mt-1.5 line-clamp-2 text-xs text-ink-3">
             {distribution(s)}
-            {s.packages?.length > 0 && <span className="text-ink-4"> · {s.packages.join(', ')}</span>}
+            {s.packages && s.packages.length > 0 && <span className="text-ink-4"> · {s.packages.join(', ')}</span>}
           </p>
         )}
         <div className="mt-4 flex min-h-7 items-center gap-2 pt-0.5">
@@ -173,7 +176,7 @@ function SessionTile({ s, api, busy, onOpen, onAction }) {
   );
 }
 
-function SessionRow({ s, api, busy, onOpen, onAction }) {
+function SessionRow({ s, api, busy, onOpen, onAction }: CardProps) {
   return (
     <article className="session group relative flex items-center gap-3 border-b border-line px-3 py-2.5 transition-colors last:border-0 hover:bg-surface-3 [overflow-wrap:anywhere]">
       <Preview session={s} api={api} className="aspect-video w-20 shrink-0 rounded border border-line sm:w-28" glyph="size-4" label={false} />
@@ -188,7 +191,7 @@ function SessionRow({ s, api, busy, onOpen, onAction }) {
         ) : (
           <p className="mt-0.5 truncate text-xs text-ink-4">
             {distribution(s)}
-            {s.packages?.length > 0 && <span> · {s.packages.join(', ')}</span>}
+            {s.packages && s.packages.length > 0 && <span> · {s.packages.join(', ')}</span>}
           </p>
         )}
       </div>
