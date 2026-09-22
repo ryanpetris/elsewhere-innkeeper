@@ -173,7 +173,7 @@ impl Store {
 fn read_session(db: &Connection, id: &str) -> Result<Option<Session>> {
     let session = db.prepare_cached(
         "SELECT id, name, distribution, port, started_ms, status, stage, error, installed_version,
-         repair_available, version_error, upgrade_started_ms, upgrade_target, gpu_access, gpu FROM sessions WHERE id = ?1",
+         repair_available, version_error, upgrade_started_ms, upgrade_target, gpu_access, gpu, nvidia, configured, replacement FROM sessions WHERE id = ?1",
     )?.query_row(
         [id], |row| Ok(Session {
             id: row.get(0)?, name: row.get(1)?, distribution: row.get(2)?, port: row.get(3)?,
@@ -181,6 +181,7 @@ fn read_session(db: &Connection, id: &str) -> Result<Option<Session>> {
             installed_version: row.get(8)?, repair_available: row.get(9)?, version_error: row.get(10)?,
             upgrade_started_ms: unsigned(row, 11)?, upgrade_target: row.get(12)?, gpu_access: row.get(13)?,
             gpu: row.get::<_, Option<String>>(14)?.map(|json| serde_json::from_str(&json)).transpose().map_err(|e| rusqlite::Error::FromSqlConversionFailure(14, rusqlite::types::Type::Text, Box::new(e)))?,
+            nvidia: row.get(15)?, configured: json_column(row, 16)?, replacement: json_column(row, 17)?,
             packages: vec![], docker_args: vec![], timings: Default::default(), startup_command: String::new(),
             screen_size: None, kiosk: false, software_encoding: false, applied_settings: None, launching_settings: None,
         }),
@@ -243,14 +244,15 @@ fn read_session(db: &Connection, id: &str) -> Result<Option<Session>> {
 fn write_session(db: &Connection, s: &Session) -> Result<()> {
     db.execute(
         "INSERT INTO sessions (id, name, distribution, port, started_ms, status, stage, error,
-         installed_version, repair_available, version_error, upgrade_started_ms, upgrade_target, gpu_access, gpu)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+         installed_version, repair_available, version_error, upgrade_started_ms, upgrade_target, gpu_access, gpu, nvidia, configured, replacement)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
          ON CONFLICT(id) DO UPDATE SET name=excluded.name, distribution=excluded.distribution,
          port=excluded.port, started_ms=excluded.started_ms, status=excluded.status, stage=excluded.stage,
          error=excluded.error, installed_version=excluded.installed_version, repair_available=excluded.repair_available,
-         version_error=excluded.version_error, upgrade_started_ms=excluded.upgrade_started_ms, upgrade_target=excluded.upgrade_target, gpu_access=excluded.gpu_access, gpu=excluded.gpu",
+         version_error=excluded.version_error, upgrade_started_ms=excluded.upgrade_started_ms, upgrade_target=excluded.upgrade_target, gpu_access=excluded.gpu_access, gpu=excluded.gpu, nvidia=excluded.nvidia, configured=excluded.configured, replacement=excluded.replacement",
         params![s.id, s.name, s.distribution, s.port, i64::try_from(s.started_ms)?, s.status, s.stage, s.error,
-                s.installed_version, s.repair_available, s.version_error, i64::try_from(s.upgrade_started_ms)?, s.upgrade_target, s.gpu_access, s.gpu.as_ref().map(serde_json::to_string).transpose()?],
+                s.installed_version, s.repair_available, s.version_error, i64::try_from(s.upgrade_started_ms)?, s.upgrade_target, s.gpu_access, s.gpu.as_ref().map(serde_json::to_string).transpose()?, s.nvidia,
+                s.configured.as_ref().map(serde_json::to_string).transpose()?, s.replacement.as_ref().map(serde_json::to_string).transpose()?],
     )?;
     for table in [
         "session_settings",
@@ -302,6 +304,22 @@ fn write_session(db: &Connection, s: &Session) -> Result<()> {
         )?;
     }
     Ok(())
+}
+
+fn json_column<T: serde::de::DeserializeOwned>(
+    row: &rusqlite::Row<'_>,
+    index: usize,
+) -> rusqlite::Result<Option<T>> {
+    row.get::<_, Option<String>>(index)?
+        .map(|json| serde_json::from_str(&json))
+        .transpose()
+        .map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(
+                index,
+                rusqlite::types::Type::Text,
+                Box::new(e),
+            )
+        })
 }
 
 fn unsigned(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u64> {
@@ -386,6 +404,9 @@ mod tests {
             screen_size: settings.screen_size,
             kiosk: settings.kiosk,
             software_encoding: settings.software_encoding,
+            nvidia: true,
+            configured: None,
+            replacement: None,
             gpu_access: true,
             gpu: Some(crate::gpu::Gpu {
                 id: "0000:01:00.0".into(),
@@ -418,6 +439,7 @@ mod tests {
         let first = db.create(session()).await.unwrap().unwrap();
         let mut without_options = session();
         without_options.docker_args.clear();
+        without_options.nvidia = false;
         without_options.gpu_access = false;
         without_options.gpu = None;
         without_options.distribution = "ubuntu".into();
@@ -437,6 +459,13 @@ mod tests {
         );
         assert!(db.session(&first.id).await.unwrap().unwrap() == first);
         db.change(&first.id, |s| {
+            s.configured = Some(crate::ContainerSettings::from(&*s));
+            s.replacement = Some(crate::Replacement {
+                source: "fixture-container".into(),
+                snapshot: "fixture-snapshot".into(),
+                image: Some("sha256:fixture".into()),
+                settings: crate::ContainerSettings::from(&*s),
+            });
             s.applied_settings = s.launching_settings.take();
         })
         .await

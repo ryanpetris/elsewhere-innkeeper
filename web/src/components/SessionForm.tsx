@@ -33,7 +33,9 @@ const screenPresets = ['1280x720', '1920x1080', '2560x1440', '3840x2160'];
 /// `note` says what saving does; `blocked`, when set, replaces it with why it cannot and holds the
 /// commit back.
 export function SessionForm({ submit, error, initial, gpus = [], gpuErrors = [], administrator = false, cancelTo, note = '', blocked = '' }: { submit: (profile: SessionProfile) => Promise<void>; error: string; initial?: ManagedSession; gpus?: Gpu[]; gpuErrors?: string[]; administrator?: boolean; cancelTo: string; note?: string; blocked?: string }) {
-  const gpuAvailable = gpus.length > 0;
+  const compatibleGpus = initial ? gpus.filter(g => (g.driver === 'nvidia') === initial.nvidia) : gpus;
+  const gpuAvailable = compatibleGpus.length > 0;
+  const gpuOptions = initial?.gpu && !compatibleGpus.some(g => g.id === initial.gpu?.id) ? [initial.gpu, ...compatibleGpus] : compatibleGpus;
   const defaults = { ...defaultProfile, gpu_access: gpuAvailable, gpu_id: gpus[0]?.id ?? null, software_encoding: !gpuAvailable };
   const [profile, setProfile] = useState<SessionProfile>(initial || defaults);
   const [packages, setPackages] = useState(initial?.packages.join(' ') || '');
@@ -120,7 +122,7 @@ export function SessionForm({ submit, error, initial, gpus = [], gpuErrors = [],
           await submit({
             ...profile,
             packages: packages.trim().split(/\s+/).filter(Boolean),
-            docker_args: (administrator ? dockerArgs : '').split('\n').map(line => line.trim()).filter(Boolean),
+            docker_args: (administrator ? dockerArgs : initial?.docker_args.join('\n') || '').split('\n').map(line => line.trim()).filter(Boolean),
             screen_size: size,
             gpu_id: profile.gpu_access ? profile.gpu_id : null,
             software_encoding: profile.software_encoding || !profile.gpu_access,
@@ -188,11 +190,10 @@ export function SessionForm({ submit, error, initial, gpus = [], gpuErrors = [],
           <div className="p-4">
             <Field
               label="Extra packages"
-              hint={initial ? 'Packages are set at creation. Create a new session to change them.' : 'Optional. Separate package names with spaces.'}
+              hint="Optional. Separate package names with spaces. Added packages install on the next launch; removing a name keeps the package installed."
             >
               <textarea
                 className="input min-h-16 resize-y py-2 font-mono text-xs"
-                readOnly={!!initial}
                 name="packages"
                 rows={3}
                 placeholder="firefox foot"
@@ -205,19 +206,19 @@ export function SessionForm({ submit, error, initial, gpus = [], gpuErrors = [],
 
         <Section title="Display">
           <div className="flex flex-col gap-4 p-4">
-            {!initial && gpuErrors.map(message => <Alert key={message}>{message}</Alert>)}
+            {gpuErrors.map(message => <Alert key={message}>{message}</Alert>)}
             <div className="flex flex-col gap-2">
               <label className="flex items-center gap-2.5 text-sm text-ink">
                 <input type="checkbox" className="check" name="gpu_access" checked={profile.gpu_access}
-                  disabled={!!initial || (!gpuAvailable && !profile.gpu_access)}
-                  onChange={e => setProfile(p => ({ ...p, gpu_access: e.target.checked, gpu_id: p.gpu_id ?? gpus[0]?.id ?? null, software_encoding: p.software_encoding || !e.target.checked }))} />
+                  disabled={initial?.nvidia || (!gpuAvailable && !profile.gpu_access)}
+                  onChange={e => setProfile(p => ({ ...p, gpu_access: e.target.checked, gpu_id: p.gpu_id ?? compatibleGpus[0]?.id ?? null, software_encoding: p.software_encoding || !e.target.checked }))} />
                 GPU access
               </label>
-              <p className="text-xs text-ink-3">{initial ? 'GPU access is set at creation.' : gpuAvailable ? 'Let the desktop and applications use the host GPU. Set at creation.' : 'No host GPU is available.'}</p>
-              {profile.gpu_access && <Field label="GPU" hint="The selected GPU renders and encodes the desktop. Set at creation.">
-                <select className="select select-md w-full" name="gpu_id" disabled={!!initial}
+              <p className="text-xs text-ink-3">{!initial ? 'Let the desktop and applications use the host GPU. NVIDIA sessions require NVIDIA GPUs; software and other GPUs cannot switch to NVIDIA.' : initial.nvidia ? 'This session requires an NVIDIA GPU.' : 'Use a non-NVIDIA GPU or software rendering. Applies on Start or Relaunch.'}</p>
+              {profile.gpu_access && <Field label="GPU" hint="The selected GPU renders and encodes the desktop. If unavailable at startup, the first compatible GPU is selected.">
+                <select className="select select-md w-full" name="gpu_id"
                   value={profile.gpu_id ?? ''} onChange={e => change('gpu_id', e.target.value)}>
-                  {(initial?.gpu ? [initial.gpu] : gpus).map(g => <option key={g.id} value={g.id}>{g.driver} · {g.id} · {g.node}</option>)}
+                  {gpuOptions.map(g => <option key={g.id} value={g.id}>{g.driver} · {g.id} · {g.node}</option>)}
                 </select>
               </Field>}
               <label className="flex items-center gap-2.5 text-sm text-ink">
@@ -276,16 +277,14 @@ export function SessionForm({ submit, error, initial, gpus = [], gpuErrors = [],
               <Field
               label="Docker options"
               hint={
-                initial
-                  ? 'Docker options are set at creation. Create a new session to change them.'
-                  : 'Optional. One --flag=value per line. Supports --security-opt, --cap-add, and --cap-drop. Repeated options are allowed.'
+                administrator ? 'Optional. One --flag=value per line. Supports --security-opt, --cap-add, and --cap-drop. Applies on Start or Relaunch.' : 'Only administrators can change Docker options.'
               }
             >
               <textarea
                 className="input min-h-20 resize-y py-2 font-mono text-xs"
                 name="docker_args"
                 rows={4}
-                readOnly={!!initial}
+                readOnly={!administrator}
                 value={dockerArgs}
                 onChange={e => setDockerArgs(e.target.value)}
                 placeholder={'--security-opt=seccomp=unconfined\n--security-opt=apparmor=unconfined\n--cap-add=SYS_ADMIN'}

@@ -32,9 +32,9 @@ if [ "$mode" = create ]; then
     sh /opt/innkeeper/install.sh "$expected"
 fi
 stage packages
-if [ ! -f /opt/innkeeper/packages-installed ]; then
+if [ ! -f /opt/innkeeper/packages-installed ] || [ "$(cat /opt/innkeeper/packages-requested)" != "$(cat /opt/innkeeper/packages-installed)" ]; then
     sh /opt/innkeeper/packages.sh "$@"
-    touch /opt/innkeeper/packages-installed
+    cp /opt/innkeeper/packages-requested /opt/innkeeper/packages-installed
 fi
 # Device group IDs come from the host and may differ from the image's groups.
 for device in /dev/dri/card* /dev/dri/renderD* /dev/nvidia* /dev/nvidia-caps/*; do

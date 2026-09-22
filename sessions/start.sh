@@ -6,7 +6,7 @@ set -eu
 export PATH=/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin
 if [ "$INNKEEPER_RENDER_NODE" != none ]; then
     if [ ! -c "$INNKEEPER_RENDER_NODE" ] || [ ! -r "$INNKEEPER_RENDER_NODE" ] || [ ! -w "$INNKEEPER_RENDER_NODE" ]; then
-        echo 'Selected GPU is inaccessible in this container. Check device permissions or create a new session.' >&2
+        echo 'Selected GPU is inaccessible in this container. Check device permissions, then Stop and Start.' >&2
         exit 1
     fi
     major=$(stat -c %t "$INNKEEPER_RENDER_NODE")
@@ -15,7 +15,7 @@ if [ "$INNKEEPER_RENDER_NODE" != none ]; then
     identity=$(basename "$(readlink -f "/sys/dev/char/$device/device")")
     driver=$(basename "$(readlink -f "/sys/dev/char/$device/device/driver")")
     if [ "$device" != "$INNKEEPER_GPU_DEVICE" ] || [ "$identity" != "$INNKEEPER_GPU_ID" ] || [ "$driver" != "$INNKEEPER_GPU_DRIVER" ]; then
-        echo 'Selected GPU device mapping changed. Create a new session for this GPU.' >&2
+        echo 'Selected GPU device mapping changed. Stop and Start to refresh the GPU mapping.' >&2
         exit 1
     fi
 fi

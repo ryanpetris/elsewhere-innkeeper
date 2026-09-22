@@ -39,7 +39,7 @@ export function NewSessionPage({ api, user, refresh, loaded, gpus, gpuErrors }: 
   );
 }
 
-export function SessionSettingsPage({ id, sessions, loaded, api, refresh }: { id: string; sessions: Session[]; loaded: boolean; api: Api; refresh: () => Promise<void> }) {
+export function SessionSettingsPage({ id, sessions, loaded, api, refresh, user, gpus, gpuErrors }: { id: string; sessions: Session[]; loaded: boolean; api: Api; refresh: () => Promise<void>; user: User; gpus: Gpu[]; gpuErrors: string[] }) {
   const [error, setError] = useState('');
   const s = sessions.find(item => item.id === id);
   if (!s || s.access_role !== 'manager')
@@ -70,9 +70,12 @@ export function SessionSettingsPage({ id, sessions, loaded, api, refresh }: { id
       </PageHeader>
       <SessionForm
         initial={s}
+        administrator={user.role === 'administrator'}
+        gpus={gpus}
+        gpuErrors={gpuErrors}
         error={error}
         cancelTo={back}
-        note="The name applies immediately. Screen size, kiosk mode, software encoding and the startup command apply on the next launch."
+        note="The name applies immediately. Other settings apply on Start or Relaunch. GPU, package and Docker option changes recreate the container while preserving installed software and files."
         blocked={settled(s) ? '' : 'Settings can be saved once the session is running or stopped.'}
         submit={async profile => {
           setError('');
@@ -81,6 +84,10 @@ export function SessionSettingsPage({ id, sessions, loaded, api, refresh }: { id
               method: 'PUT',
               body: JSON.stringify({
                 name: profile.name,
+                packages: profile.packages,
+                docker_args: profile.docker_args,
+                gpu_access: profile.gpu_access,
+                gpu_id: profile.gpu_id,
                 screen_size: profile.screen_size,
                 kiosk: profile.kiosk,
                 software_encoding: profile.software_encoding,

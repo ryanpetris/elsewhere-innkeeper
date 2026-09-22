@@ -108,9 +108,10 @@ if args[:1] == ['create'] or args[:2] == ['volume', 'create']:
 if args[:1] in (['image'], ['pull']) and Path(__file__).with_name('no-base').exists():
     Path(__file__).with_name('image-attempt').touch()
     sys.exit(1)
-if args and args[0] in ('cp', 'start', 'stop') and Path(__file__).with_name('fail-' + args[0]).exists():
+if args and args[0] in ('cp', 'start', 'stop', 'commit', 'rm') and Path(__file__).with_name('fail-' + args[0]).exists():
     sys.exit(1)
 if args and args[0] == 'create':
+    if Path(__file__).with_name('fail-replacement-create').exists(): sys.exit(1)
     # Model a daemon whose default logging driver is journald.
     if '--log-driver' not in args:
         args[1:1] = ['--log-driver', 'journald']
@@ -528,7 +529,7 @@ exec sleep 10000
             wait(lambda: state(sid)["version_status"] == "older")
             assert state(sid)["status"] == "stopped"
             # An upgrade exits without launching or applying pending desktop settings.
-            pending_profile = {"name":"Upgrade test", "screen_size":{"width":1280,"height":720}, "kiosk":False, "software_encoding":True, "startup_command":""}
+            pending_profile = {"name":"Upgrade test", "screen_size":{"width":1280,"height":720}, "kiosk":False, "software_encoding":True, "startup_command":"", "packages":[], "docker_args":docker_args, "gpu_access":False, "gpu_id":None}
             api(f"/sessions/{sid}/settings", "PUT", pending_profile)
             package(distro, "upgraded")
             api(f"/sessions/{sid}/upgrade", "POST")
@@ -629,7 +630,7 @@ exec sleep 10000
             restart_manager()
             wait(lambda: state(sid)["status"] == "running")
             assert not state(sid)["settings_pending"]
-            original = {k: state(sid)[k] for k in ("name", "screen_size", "kiosk", "startup_command", "software_encoding")}
+            original = {k: state(sid)[k] for k in ("name", "screen_size", "kiosk", "startup_command", "software_encoding", "packages", "docker_args", "gpu_access", "gpu_id")}
             def save(settings):
                 return api(f"/sessions/{sid}/settings", "PUT", settings)
             def pending():
@@ -650,8 +651,8 @@ exec sleep 10000
             missing = dict(edited)
             del missing["screen_size"]
             rejected(f"/sessions/{sid}/settings", "PUT", missing, 400)
-            rejected(f"/sessions/{sid}/settings", "PUT", dict(edited, packages=[]), 400)
-            rejected(f"/sessions/{sid}/settings", "PUT", dict(edited, docker_args=[]), 400)
+            rejected(f"/sessions/{sid}/settings", "PUT", dict(edited, packages=["--bad"]), 400)
+            rejected(f"/sessions/{sid}/settings", "PUT", dict(edited, docker_args=["--privileged=true"]), 400)
             # A failed write cannot publish edits in memory.
             reject_updates(data, sid, True)
             rejected(f"/sessions/{sid}/settings", "PUT", renamed, 500)
@@ -688,7 +689,7 @@ exec sleep 10000
             wait(lambda: state(sid)["status"] == "running" and not pending())
             assert launched(sid, baseline + 1)
             args = subprocess.check_output(["docker", "exec", name, "cat", "/home/elsewhere/launch-args"]).decode().split("\0")[:-1]
-            assert args == ["--no-tls", "--listen", "0.0.0.0:19443", "--url-prefix", "/e/" + sid, "--rtc-port", str(state(sid)["port"]), "--elements", "--rtc-addr", "127.0.0.1",
+            assert args == ["--no-tls", "--listen", "0.0.0.0:19443", "--url-prefix", "/e/" + sid, "--rtc-port", str(state(sid)["port"]), "--elements", "--render-node", "none", "--rtc-addr", "127.0.0.1",
                             "--screen-size", "1280x720", "--software-encoding", "--kiosk", "--exec", command], args
             run("docker", "exec", name, "test", "!", "-e", "/tmp/unexpected")
             assert run("docker", "inspect", name, "--format", "{{.Id}}") == identity
@@ -711,7 +712,7 @@ exec sleep 10000
                 api(f"/sessions/{sid}/start", "POST")
                 wait(lambda: state(sid)["status"] == "running" and not pending())
                 args = subprocess.check_output(["docker", "exec", name, "cat", "/home/elsewhere/launch-args"]).decode().split("\0")[:-1]
-                assert args == ["--no-tls", "--listen", "0.0.0.0:19443", "--url-prefix", "/e/" + sid, "--rtc-port", str(state(sid)["port"]), "--elements", "--rtc-addr", "127.0.0.1", "--software-encoding"]
+                assert args == ["--no-tls", "--listen", "0.0.0.0:19443", "--url-prefix", "/e/" + sid, "--rtc-port", str(state(sid)["port"]), "--elements", "--render-node", "none", "--rtc-addr", "127.0.0.1", "--software-encoding"]
                 save(edited)
                 api(f"/sessions/{sid}/relaunch", "POST")
                 wait(lambda: state(sid)["status"] == "running" and not pending())
@@ -726,10 +727,112 @@ exec sleep 10000
             api(f"/sessions/{sid}/start", "POST")
             wait(lambda: state(sid)["status"] == "running" and not pending())
             check_docker_args(sid, docker_args)
+            # Replacement preserves the complete installation, including files outside the home volume.
+            old_id = run("docker", "inspect", name, "--format", "{{.Id}}")
+            old_version = state(sid)["installed_version"]
+            old_hostname = run("docker", "inspect", name, "--format", "{{.Config.Hostname}}")
+            shutil.copyfile(source / "packages.sh", recipes / "packages.sh")
+            run("docker", "exec", name, "sh", "-c", "echo home > /home/elsewhere/replacement-sentinel")
+            with database(data) as db:
+                old_tokens = [tuple(row) for row in db.execute("SELECT token_id,secret FROM instance_tokens WHERE session_id=? ORDER BY token_id", [sid])]
+            # The rig has no /dev/dri mount: missing hardware must fail before stopping the desktop.
+            with database(data) as db:
+                db.execute("UPDATE sessions SET gpu_access=1,gpu=? WHERE id=?", [json.dumps(dict(id="missing",driver="i915",node="/dev/dri/renderD999",major=226,minor=999)),sid])
+            assert "compatible GPU" in rejected_action(sid, "relaunch", 400)
+            assert run("docker", "inspect", name, "--format", "{{.State.Running}}") == "true"
+            assert run("docker", "inspect", name, "--format", "{{.Id}}") == old_id
+            with database(data) as db:
+                db.execute("UPDATE sessions SET gpu_access=0,gpu=NULL WHERE id=?", [sid])
+            replacement_profile = dict(renamed, docker_args=["--cap-drop=NET_RAW"], packages=["bash", "tree"])
+            # A cancelled snapshot must never replace newer writes from the same source.
+            save(replacement_profile)
+            (tools / "fail-rm").touch()
+            api(f"/sessions/{sid}/relaunch", "POST")
+            wait(lambda: state(sid)["status"] == "failed", 120)
+            with database(data) as db:
+                cancelled = json.loads(db.execute("SELECT replacement FROM sessions WHERE id=?", [sid]).fetchone()[0])
+            assert cancelled["image"]
+            (tools / "fail-rm").unlink()
+            api(f"/sessions/{sid}/stop", "POST")
+            save(renamed)
+            api(f"/sessions/{sid}/start", "POST")
+            wait(lambda: state(sid)["status"] == "running")
+            run("docker", "exec", name, "sh", "-c", "echo newer > /root/after-cancelled-snapshot")
+            assert save(replacement_profile)["settings_pending"]
+            assert not save(renamed)["settings_pending"]
+            save(replacement_profile)
+            (tools / "fail-commit").touch()
+            api(f"/sessions/{sid}/relaunch", "POST")
+            wait(lambda: state(sid)["status"] == "failed")
+            assert run("docker", "inspect", name, "--format", "{{.Id}}") == old_id
+            api(f"/sessions/{sid}/stop", "POST")
+            save(renamed)
+            api(f"/sessions/{sid}/start", "POST")
+            wait(lambda: state(sid)["status"] == "running")
+            assert run("docker", "inspect", name, "--format", "{{.Id}}") == old_id
+            save(replacement_profile)
+            api(f"/sessions/{sid}/relaunch", "POST")
+            wait(lambda: state(sid)["status"] == "failed")
+            (tools / "fail-commit").unlink()
+            api(f"/sessions/{sid}/stop", "POST")
+            (tools / "fail-replacement-create").touch()
+            snapshot_started = time.monotonic()
+            api(f"/sessions/{sid}/upgrade", "POST")
+            wait(lambda: state(sid)["status"] == "failed", 120)
+            with database(data) as db:
+                replacement = json.loads(db.execute("SELECT replacement FROM sessions WHERE id=?", [sid]).fetchone()[0])
+            image_id = replacement["image"]
+            assert image_id and run("docker", "image", "inspect", image_id, "--format", "{{json .RepoTags}}") != "[]"
+            assert not run("docker", "ps", "-aq", "--filter", "name=^/" + name + "$")
+            restart_manager()
+            api(f"/sessions/{sid}/stop", "POST")
+            (tools / "fail-replacement-create").unlink()
+            save(dict(replacement_profile, docker_args=["--cap-add=NOT_A_CAPABILITY"]))
+            api(f"/sessions/{sid}/start", "POST")
+            wait(lambda: state(sid)["status"] == "failed")
+            api(f"/sessions/{sid}/stop", "POST")
+            save(replacement_profile)
+            (tools / "fail-cp").touch()
+            api(f"/sessions/{sid}/start", "POST")
+            wait(lambda: state(sid)["status"] == "failed")
+            replacement_id = run("docker", "inspect", name, "--format", "{{.Id}}")
+            assert replacement_id != old_id
+            (tools / "fail-cp").unlink()
+            api(f"/sessions/{sid}/stop", "POST")
+            api(f"/sessions/{sid}/start", "POST")
+            wait(lambda: state(sid)["status"] == "running" and not pending(), 180)
+            assert run("docker", "inspect", name, "--format", "{{.Id}}") == replacement_id
+            assert run("docker", "inspect", name, "--format", "{{.Image}}") == image_id
+            snapshot = json.loads(run("docker", "image", "inspect", image_id))[0]
+            assert image_id != cancelled["image"]
+            assert snapshot["RepoTags"] == [f"innkeeper-snapshot-{sid}:{replacement['snapshot']}"]
+            assert snapshot["Config"]["Labels"]["io.innkeeper.snapshot-id"] == replacement["snapshot"]
+            assert run("docker", "exec", name, "cat", "/root/after-cancelled-snapshot") == "newer"
+            assert snapshot["Config"]["Labels"]["io.innkeeper.snapshot"] == "true"
+            assert snapshot["Config"]["Labels"]["io.innkeeper.session"] == sid
+            assert snapshot["Config"]["Labels"]["io.innkeeper.snapshot-source"] == old_id
+            assert run("docker", "exec", name, "cat", "/root/settings-sentinel") == "retained"
+            assert run("docker", "exec", name, "cat", "/home/elsewhere/replacement-sentinel") == "home"
+            assert run("docker", "exec", name, "cat", "/opt/innkeeper/packages-installed") == "bash\ntree"
+            run("docker", "exec", name, "tree", "--version")
+            assert run("docker", "inspect", name, "--format", "{{.Config.Hostname}}") == old_hostname
+            assert state(sid)["installed_version"] == old_version
+            check_docker_args(sid, ["--cap-drop=NET_RAW"])
+            with database(data) as db:
+                assert [tuple(row) for row in db.execute("SELECT token_id,secret FROM instance_tokens WHERE session_id=? ORDER BY token_id", [sid])] == old_tokens
+            # Removing a requested package retains installed programs and triggers just one replacement.
+            save(dict(replacement_profile, packages=[]))
+            api(f"/sessions/{sid}/relaunch", "POST")
+            wait(lambda: state(sid)["status"] == "running" and not pending(), 120)
+            assert run("docker", "inspect", name, "--format", "{{.Id}}") != replacement_id
+            run("docker", "exec", name, "tree", "--version")
+            assert run("docker", "exec", name, "cat", "/root/settings-sentinel") == "retained"
+            print(f"{distro}: replacement, snapshot recovery, tagged images, settings and token preservation passed in {time.monotonic() - snapshot_started:.1f}s", flush=True)
             print(f"{distro}: Docker security options and capabilities survive restart, upgrade and relaunch", flush=True)
             print(f"{distro}: saved settings, resets, quoting, pending state, persistence, serialized relaunch and failure retry passed", flush=True)
             print(f"{distro}: explicit upgrade, downgrade, reinstall, stopped version detection, launch-only start, cancellation, managed token reuse and restart persistence passed", flush=True)
     except BaseException:
+        print("Session states:", api("/sessions"), flush=True)
         with database(data) as db:
             print("Stored settings:", [dict(row) for row in db.execute("SELECT * FROM session_settings")], flush=True)
         for sid in created:
@@ -742,6 +845,10 @@ exec sleep 10000
             except Exception:
                 subprocess.run(["docker", "rm", "-f", "innkeeper-" + sid], capture_output=True)
                 subprocess.run(["docker", "volume", "rm", "innkeeper-" + sid + "-data"], capture_output=True)
+        for sid in created:
+            images = run("docker", "image", "ls", "-q", "--filter", "label=io.innkeeper.snapshot=true", "--filter", "label=io.innkeeper.session=" + sid).splitlines()
+            for image in dict.fromkeys(images):
+                subprocess.run(["docker", "image", "rm", image], capture_output=True)
         manager.terminate()
         manager.wait(timeout=10)
         log.seek(0)

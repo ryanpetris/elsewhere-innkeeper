@@ -18,6 +18,9 @@ CREATE TABLE sessions (
     version_error TEXT,
     upgrade_started_ms INTEGER NOT NULL CHECK (upgrade_started_ms >= 0),
     upgrade_target TEXT,
+    nvidia INTEGER NOT NULL DEFAULT 0 CHECK (nvidia IN (0, 1)),
+    configured TEXT CHECK (configured IS NULL OR json_valid(configured)),
+    replacement TEXT CHECK (replacement IS NULL OR json_valid(replacement)),
     gpu_access INTEGER NOT NULL CHECK (gpu_access IN (0, 1)),
     gpu TEXT CHECK (gpu IS NULL OR (json_valid(gpu) AND json_type(gpu) = 'object')),
     CHECK ((gpu_access = 1) = (gpu IS NOT NULL))

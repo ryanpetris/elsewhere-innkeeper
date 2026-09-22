@@ -8,9 +8,10 @@ const intel = {id:'0000:00:02.0',driver:'i915',node:'/dev/dri/renderD128',major:
 const nvidia = {id:'0000:01:00.0',driver:'nvidia',node:'/dev/dri/renderD129',major:226,minor:129};
 let gpus = [intel, nvidia];
 let gpuErrors = [];
+let role = 'administrator';
 const dockerArgs = ['--security-opt=seccomp=unconfined', '--security-opt=apparmor=unconfined', '--cap-add=SYS_ADMIN'];
 const session = {
-  gpu: nvidia, gpu_id: nvidia.id, id: 'docker-options-fixture', name: 'Steam', distribution: 'ubuntu', packages: [],
+  nvidia: true, gpu: nvidia, gpu_id: nvidia.id, id: 'docker-options-fixture', name: 'Steam', distribution: 'ubuntu', packages: [],
   access_role: 'manager', docker_args: dockerArgs, status: 'stopped', screen_size: null, kiosk: false, software_encoding: true, gpu_access: true,
   startup_command: '', settings_pending: false, installed_version: '0.7.3-1', expected_version: '0.7.3',
   version_status: 'current', repair_available: false, port: 0, started_ms: 0, timings: {},
@@ -42,7 +43,7 @@ try {
   await page.route('**/api/**', async route => {
     const request = route.request(), path = new URL(request.url()).pathname;
     if (path === '/api/me') {
-      await route.fulfill({json: {user:{id:'fixture',username:'fixture',display_name:'Fixture',role:'administrator'},csrf_token:'fixture-csrf',session_expires_at_ms:Date.now()+7*86400000,server_time_ms:Date.now()}});
+      await route.fulfill({json: {user:{id:'fixture',username:'fixture',display_name:'Fixture',role},csrf_token:'fixture-csrf',session_expires_at_ms:Date.now()+7*86400000,server_time_ms:Date.now()}});
     } else if (path === '/api/sessions' && request.method() === 'GET') {
       await route.fulfill({ json: { sessions: [session], version: 'fixture', gpu_available: gpus.length > 0, gpus, gpu_errors: gpuErrors } });
     } else if (path === '/api/sessions' && request.method() === 'POST') {
@@ -146,18 +147,38 @@ try {
   assert.equal(new URL(page.url()).pathname, `/sessions/${session.id}/settings`);
   await page.getByText('Advanced Docker Options', { exact: true }).click();
   assert.equal(await options.inputValue(), dockerArgs.join('\n'));
-  assert.equal(await options.evaluate(element => element.readOnly), true);
+  assert.equal(await options.evaluate(element => element.readOnly), false);
   assert.equal(await page.getByRole('checkbox', {name:'GPU access',exact:true}).isDisabled(), true);
+  assert.equal(await page.locator('select[name=gpu_id] option').count(), 1);
+  await page.locator('textarea[name=packages]').fill('bash');
   await page.getByRole('checkbox', {name:'Software video encoding',exact:true}).uncheck();
   await page.getByLabel('Session name').fill('Steam renamed');
   const saveRequest = page.waitForRequest(request => request.method() === 'PUT');
   await page.getByRole('button', { name: 'Save Changes', exact: true }).click();
   assert.deepEqual((await saveRequest).postDataJSON(), {
-    name: 'Steam renamed', screen_size: null, kiosk: false, software_encoding: false, startup_command: '',
+    name: 'Steam renamed', packages: ['bash'], docker_args: dockerArgs, gpu_access: true, gpu_id: nvidia.id, screen_size: null, kiosk: false, software_encoding: false, startup_command: '',
   });
   // Saving returns to the session.
   await page.getByRole('heading', { name: session.name, exact: true }).waitFor();
   assert.equal(new URL(page.url()).pathname, `/sessions/${session.id}`);
+  // A non-administrator manager can change rendering while preserving administrator Docker options.
+  role = 'user';
+  Object.assign(session, {nvidia:false, gpu:intel, gpu_id:intel.id});
+  await page.goto(`${origin}/sessions/${session.id}/settings`);
+  await page.getByRole('heading', {name:'Edit Settings',exact:true}).waitFor();
+  assert.equal(await page.locator('select[name=gpu_id] option').count(), 1);
+  assert.equal(await page.getByRole('checkbox', {name:'GPU access',exact:true}).isDisabled(), false);
+  await page.getByText('Advanced Docker Options', {exact:true}).click();
+  assert.equal(await options.evaluate(element => element.readOnly), true);
+  await page.getByRole('checkbox', {name:'GPU access',exact:true}).uncheck();
+  const managerSave = page.waitForRequest(request => request.method() === 'PUT');
+  await page.getByRole('button', {name:'Save Changes',exact:true}).click();
+  const managerSettings = (await managerSave).postDataJSON();
+  assert.deepEqual(managerSettings.docker_args, dockerArgs);
+  assert.equal(managerSettings.gpu_access, false);
+  assert.equal(managerSettings.gpu_id, null);
+  assert.equal(managerSettings.software_encoding, true);
+  role = 'administrator';
   gpus = [];
   gpuErrors = ['Cannot identify render device. Check host device and sysfs access.'];
   await page.goto(origin + '/sessions/new');
@@ -182,7 +203,7 @@ try {
   await page.reload();
   await page.getByRole('button', {name:'Sign In',exact:true}).waitFor();
   assert.deepEqual(errors, []);
-  console.log('Docker options: profile imports, default options, repeated creation arguments, read-only settings and Save payload passed');
+  console.log('Docker options: profile imports, default options, repeated creation arguments, editable settings and Save payload passed');
 } finally {
   await browser.close();
   await new Promise(resolve => server.close(resolve));

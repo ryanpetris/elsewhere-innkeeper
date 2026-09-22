@@ -93,6 +93,14 @@ with tempfile.TemporaryDirectory(prefix='innkeeper-accounts-') as temporary:
         with db() as conn: assert conn.execute('SELECT revoked FROM instance_tokens WHERE token_id=?',(token_id,)).fetchone()[0]==1
         a.api(f'/sessions/{sid}/access/{u["id"]}','PUT',{'role':'viewer'})
         with db() as conn: assert conn.execute('SELECT revoked FROM instance_tokens WHERE token_id=?',(token_id,)).fetchone()[0]==1
+        a.api(f'/sessions/{sid}/access/{u["id"]}','PUT',{'role':'manager'})
+        with db() as conn: conn.execute("UPDATE sessions SET status='stopped' WHERE id=?", [sid])
+        settings = dict(name='Edited',screen_size=None,kiosk=False,software_encoding=True,startup_command='',packages=[],docker_args=['--cap-drop=NET_RAW'],gpu_access=False,gpu_id=None)
+        assert a.request(f'/sessions/{sid}/settings','PUT',settings)[0]==200
+        assert viewer.request(f'/sessions/{sid}/settings','PUT',dict(settings,name='Manager edit'))[0]==200
+        assert viewer.request(f'/sessions/{sid}/settings','PUT',dict(settings,docker_args=[]))[0]==403
+        assert a.request(f'/sessions/{sid}/settings','PUT',dict(settings,distribution='arch'))[0]==400
+        a.api(f'/sessions/{sid}/access/{u["id"]}','PUT',{'role':'viewer'})
         a.api('/users/'+u['id'],'PATCH',{'username':'renamed'})
         assert viewer.api('/me')['user']['id']==u['id']
         # Force the current login into its renewal window, then race two tabs.

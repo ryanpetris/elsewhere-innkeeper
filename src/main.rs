@@ -1,4 +1,5 @@
 mod accounts;
+mod containers;
 mod gpu;
 mod login_store;
 mod network;
@@ -16,6 +17,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use containers::{ContainerSettings, Replacement};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -100,6 +102,9 @@ struct Session {
     docker_args: Vec<String>,
     gpu_access: bool,
     gpu: Option<gpu::Gpu>,
+    nvidia: bool,
+    configured: Option<ContainerSettings>,
+    replacement: Option<Replacement>,
     software_encoding: bool,
     startup_command: String,
     screen_size: Option<ScreenSize>,
@@ -281,7 +286,7 @@ async fn docker(args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 fn public_session(s: &Session) -> serde_json::Value {
-    serde_json::json!({"id":s.id,"name":s.name,"distribution":s.distribution,"packages":s.packages,"docker_args":s.docker_args,"gpu_access":s.gpu_access,"gpu":s.gpu,"gpu_id":s.gpu.as_ref().map(|g| &g.id),"software_encoding":s.software_encoding,"startup_command":s.startup_command,"screen_size":s.screen_size,"kiosk":s.kiosk,"settings_pending":s.applied_settings.as_ref().is_some_and(|applied| *applied != LaunchSettings::from(s)),"installed_version":s.installed_version,"repair_available":s.repair_available,"version_error":s.version_error,"expected_version":elsewhere_version(),"version_status":version_status(s.installed_version.as_deref()),"port":s.port,"started_ms":s.started_ms,"status":s.status,"stage":s.stage,"error":s.error,"timings":s.timings})
+    serde_json::json!({"id":s.id,"name":s.name,"distribution":s.distribution,"packages":s.packages,"docker_args":s.docker_args,"gpu_access":s.gpu_access,"nvidia":s.nvidia,"gpu":s.gpu,"gpu_id":s.gpu.as_ref().map(|g| &g.id),"software_encoding":s.software_encoding,"startup_command":s.startup_command,"screen_size":s.screen_size,"kiosk":s.kiosk,"settings_pending":s.applied_settings.as_ref().is_some_and(|applied| *applied != LaunchSettings::from(s)) || s.configured.as_ref().is_some_and(|configured| *configured != ContainerSettings::from(s)),"installed_version":s.installed_version,"repair_available":s.repair_available,"version_error":s.version_error,"expected_version":elsewhere_version(),"version_status":version_status(s.installed_version.as_deref()),"port":s.port,"started_ms":s.started_ms,"status":s.status,"stage":s.stage,"error":s.error,"timings":s.timings})
 }
 fn authorized_session(s: &Session, role: &str) -> serde_json::Value {
     let mut value = if role == "manager" {
@@ -395,6 +400,11 @@ impl From<&Session> for LaunchSettings {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Settings {
+    packages: Vec<String>,
+    docker_args: Vec<String>,
+    gpu_access: bool,
+    #[serde(deserialize_with = "Option::deserialize")]
+    gpu_id: Option<String>,
     software_encoding: bool,
     name: String,
     #[serde(deserialize_with = "required_screen_size")]
@@ -452,7 +462,35 @@ async fn settings(
                 "Settings can be saved only for running or stopped sessions.".into(),
             ));
         }
+        let user = accounts::current(&app, &auth).await?;
+        if user.role != "administrator" && input.docker_args != s.docker_args {
+            return Err(accounts::forbidden());
+        }
+        validate_packages(&input.packages)?;
+        validate_docker_args(&input.docker_args)?;
+        let gpu = if input.gpu_access == s.gpu_access
+            && input.gpu_id.as_deref() == s.gpu.as_ref().map(|g| g.id.as_str())
+        {
+            s.gpu.clone()
+        } else {
+            gpu::select(
+                &gpu::discover()
+                    .0
+                    .into_iter()
+                    .filter(|gpu| gpu.nvidia() == s.nvidia)
+                    .collect::<Vec<_>>(),
+                input.gpu_access,
+                input.gpu_id.as_deref(),
+            )
+            .map_err(|e| Error(StatusCode::BAD_REQUEST, e.to_string()))?
+        };
+        gpu::compatible(s.nvidia, gpu.as_ref())
+            .map_err(|e| Error(StatusCode::BAD_REQUEST, e.to_string()))?;
         app.change(&id, move |s| {
+            s.packages = input.packages;
+            s.docker_args = input.docker_args;
+            s.gpu_access = input.gpu_access;
+            s.gpu = gpu;
             s.name = input.name.trim().into();
             s.screen_size = input.screen_size;
             s.kiosk = input.kiosk;
@@ -502,6 +540,16 @@ fn validate_docker_args(args: &[String]) -> Api<()> {
     }
     Ok(())
 }
+fn validate_packages(packages: &[String]) -> Api<()> {
+    if packages.len() > 100 || !packages.iter().all(|p| valid_package(p)) {
+        return Err(Error(
+            StatusCode::BAD_REQUEST,
+            "Choose up to 100 valid package names. Shell syntax and options are not allowed."
+                .into(),
+        ));
+    }
+    Ok(())
+}
 fn valid_package(p: &str) -> bool {
     !p.is_empty()
         && !p.ends_with('-')
@@ -540,6 +588,9 @@ async fn create(
             packages: input.packages,
             docker_args: input.docker_args,
             gpu_access: input.gpu_access,
+            nvidia: gpu.as_ref().is_some_and(gpu::Gpu::nvidia),
+            configured: None,
+            replacement: None,
             gpu,
             software_encoding,
             startup_command: input.startup_command.clone(),
@@ -727,10 +778,16 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
     }
     tokens::launching(&app, id).await;
     let result: Result<()> = async {
-        if let Some(gpu) = &s.gpu {
-            gpu.validate()?;
-            if gpu.nvidia() { require_nvidia_runtime().await.map_err(|e| anyhow::anyhow!(e.1))?; }
+        let s = containers::resolve(&app, &s).await.map_err(|e| anyhow::anyhow!(e.1))?;
+        if !new_container {
+            let info = containers::inspect(&app, id).await?;
+            if info.as_ref().is_some_and(|info| info["State"]["Running"] == true) {
+                if !upgrading { bail!("Container is already running"); }
+                docker(&["stop", "--time", "15", &container(id)]).await?;
+            }
+            containers::replace(&app, &s).await?;
         }
+        let s = app.session(id).await.map_err(|e| anyhow::anyhow!(e.1))?;
         app.change(id, move |s| {
             s.stage = "container".into();
             s.timings
@@ -739,71 +796,9 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
         .await?;
         let container_started = Instant::now();
         if new_container {
-            let owner = app.db.installation_id.clone();
-            let label = format!("{LABEL}={owner}");
-            docker(&["volume", "create", "--label", &label, &volume(id)]).await?;
-            let tcp = format!("127.0.0.1:{}:19443/tcp", s.port);
-            let udp = format!("0.0.0.0:{0}:{0}/udp", s.port);
-            let mount = format!("{}:/home/elsewhere", volume(id));
-            let mut args = vec![
-                "create",
-                "--name",
-                &container(id),
-                "--label",
-                &label,
-                "--init",
-                "--shm-size",
-                "1g",
-                "--log-driver",
-                "json-file",
-                "--log-opt",
-                "max-size=10m",
-                "--log-opt",
-                "max-file=3",
-                "-p",
-                &udp,
-                "-v",
-                &mount,
-                "--platform",
-                "linux/amd64",
-                "--entrypoint",
-                "sh",
-                image,
-                "/opt/innkeeper/entrypoint.sh",
-            ]
-            .into_iter()
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
-            args.splice(1..1, s.docker_args.iter().cloned());
-            if let Some(network) = &app.network.id {
-                args.splice(1..1, ["--network".into(), network.clone()]);
-            } else {
-                args.splice(1..1, ["-p".into(), tcp]);
-            }
-            if s.gpu_access {
-                anyhow::ensure!(s.gpu.is_some(), "Session has no selected GPU");
-                args.splice(
-                    1..1,
-                    ["--device".to_owned(), "/dev/dri:/dev/dri".to_owned()],
-                );
-            }
-            if s.gpu.as_ref().is_some_and(gpu::Gpu::nvidia) {
-                args.splice(1..1, ["--runtime=nvidia", "--env=NVIDIA_VISIBLE_DEVICES=all",
-                    "--env=NVIDIA_DRIVER_CAPABILITIES=compute,video,graphics,utility,display,compat32"].map(str::to_owned));
-            } else {
-                args.splice(1..1, ["--env=NVIDIA_VISIBLE_DEVICES=void".to_owned()]);
-            }
-            args.extend(s.packages.iter().cloned());
-            docker(&args.iter().map(String::as_str).collect::<Vec<_>>()).await?;
-            docker(&[
-                "cp",
-                app.assets
-                    .join("sessions")
-                    .to_str()
-                    .context("Invalid assets path")?,
-                &format!("{}:/opt/innkeeper", container(id)),
-            ])
-            .await?;
+            containers::create(&app, &s, image).await?;
+            docker(&["cp", app.assets.join("sessions").to_str().context("Invalid assets path")?,
+                &format!("{}:/opt/innkeeper", container(id))]).await?;
         } else {
             let info = app.owned(id).await?;
             if upgrading {
@@ -868,6 +863,9 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
             "launch\n".into()
         };
         copy_text(&app, id, "operation", &operation, 0o600).await?;
+        copy_text(&app, id, "packages-requested", &s.packages.join("\n"), 0o644).await?;
+        docker(&["cp", app.assets.join("sessions/packages.sh").to_str().context("Invalid assets path")?,
+            &format!("{}:/opt/innkeeper/packages.sh", container(id))]).await?;
         copy_text(&app, id, "gpu-settings.sh", &gpu_config(s.gpu.as_ref()), 0o644).await?;
         if upgrading {
             app.change(id, move |s| {
@@ -875,6 +873,7 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
                 s.upgrade_started_ms = now_ms();
             })
             .await?;
+            containers::configured(&app, &s).await?;
             docker(&["start", &container(id)]).await?;
             return Ok(());
         }
@@ -907,6 +906,7 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
         .await?;
         app.change(id, move |s| s.launching_settings = Some(launch))
             .await?;
+        containers::configured(&app, &s).await?;
         docker(&["start", &container(id)]).await?;
         app.change(id, move |s| {
             s.timings.insert(
@@ -1152,6 +1152,9 @@ async fn reconcile(app: Shared) {
             {
                 continue;
             }
+            if s.replacement.is_some() {
+                continue;
+            }
             let inspect = match app.owned(&s.id).await {
                 Ok(v) => v,
                 Err(e) => {
@@ -1270,7 +1273,7 @@ async fn reconcile(app: Shared) {
             } else {
                 s.stage.clone()
             };
-            if !running && inspect["State"]["Status"] == "created" {
+            if !running && inspect["State"]["Status"] == "created" && s.configured.is_none() {
                 let _=app.change(&s.id,move |s| {s.status="failed".into();s.error=Some("Container initialization was interrupted. Destroy this session and create it again.".into());}).await;
                 continue;
             }
@@ -1389,7 +1392,7 @@ async fn stop(
         .await?
         .trim()
         .is_empty();
-        if !downloading || has_container {
+        if has_container || (!downloading && s.replacement.is_none()) {
             let info = app.owned(&id).await?;
             if info["State"]["Running"] == true {
                 docker(&["stop", "--time", "15", &container(&id)]).await?;
@@ -1398,7 +1401,11 @@ async fn stop(
         app.change(&id, move |s| {
             s.upgrade_target = None;
             s.error = None;
-            s.status = if downloading && !has_container {
+            s.status = if downloading
+                && !has_container
+                && s.configured.is_none()
+                && s.replacement.is_none()
+            {
                 "cancelled"
             } else {
                 "stopped"
@@ -1455,30 +1462,33 @@ async fn begin_start(app: &Shared, id: &str, relaunch: bool) -> Api<StatusCode> 
             .into(),
         ));
     }
-    let info = app.owned(&id).await?;
-    if info["State"]["Status"] == "created" {
+    let s = containers::resolve(app, &s).await?;
+    let info = containers::inspect(app, id).await?;
+    if info.is_none() && s.replacement.is_none() {
         return Err(Error(
             StatusCode::CONFLICT,
-            "Container initialization was interrupted. Destroy this session and create it again."
-                .into(),
+            "Session container is missing.".into(),
         ));
     }
-    if let Ok(metadata) = package_metadata(app, &s).await {
-        if !metadata.complete {
-            return Err(Error(
-                StatusCode::CONFLICT,
-                "Elsewhere installation is incomplete. Install the preferred Elsewhere version before starting.".into(),
-            ));
+    if let Some(info) = info {
+        if info["State"]["Status"] == "created" && s.configured.is_none() && s.replacement.is_none()
+        {
+            return Err(Error(StatusCode::CONFLICT, "Container initialization was interrupted. Destroy this session and create it again.".into()));
         }
-    }
-    if info["State"]["Running"] == true {
-        if !relaunch {
-            return Err(Error(
-                StatusCode::CONFLICT,
-                "Container is still running. Stop it before starting.".into(),
-            ));
+        if let Ok(metadata) = package_metadata(app, &s).await {
+            if !metadata.complete {
+                return Err(Error(StatusCode::CONFLICT, "Elsewhere installation is incomplete. Install the preferred Elsewhere version before starting.".into()));
+            }
         }
-        docker(&["stop", "--time", "15", &container(id)]).await?;
+        if info["State"]["Running"] == true {
+            if !relaunch {
+                return Err(Error(
+                    StatusCode::CONFLICT,
+                    "Container is still running. Stop it before starting.".into(),
+                ));
+            }
+            docker(&["stop", "--time", "15", &container(id)]).await?;
+        }
     }
     let attempt_ms = now_ms().max(s.started_ms.saturating_add(1));
     app.change(&id, move |s| {
@@ -1513,6 +1523,7 @@ async fn upgrade(
                 "Only running or stopped sessions can be upgraded".into(),
             ));
         }
+        let s = containers::resolve(&app, &s).await?;
         let installed = package_metadata(&app, &s).await?;
         let attempt_ms = now_ms().max(s.started_ms.saturating_add(1));
         app.change(&id, move |s| {
@@ -1896,7 +1907,7 @@ async fn main() -> Result<()> {
         if matches!(s.status.as_str(), "preparing" | "upgrading")
             && matches!(
                 s.stage.as_str(),
-                "image" | "download" | "container" | "queued"
+                "image" | "download" | "container" | "queued" | "snapshot"
             )
         {
             db.change(&s.id, move |s| {

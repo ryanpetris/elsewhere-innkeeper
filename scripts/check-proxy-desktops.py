@@ -227,7 +227,7 @@ try:
                     subprocess.run(['docker','exec',name,'gcc','-m32','/tmp/check-glx32.c','-ldl','-o','/tmp/check-glx32'],check=True)
                     subprocess.run(['docker','exec','--user','elsewhere','-e','DISPLAY=:0',name,'/tmp/check-glx32'],check=True)
             for software, action in ((True,'relaunch'),(False,'start'),(True,'relaunch'),(os.environ.get('PROXY_BROWSER_SOFTWARE') == '1','relaunch')):
-                desired = {key:state(sid)[key] for key in ('name','screen_size','kiosk','startup_command')}
+                desired = {key:state(sid)[key] for key in ('name','screen_size','kiosk','startup_command','packages','docker_args','gpu_access','gpu_id')}
                 desired['software_encoding'] = software
                 api('/sessions/'+sid+'/settings','PUT',desired)
                 if action == 'start': api('/sessions/'+sid+'/stop','POST')
@@ -235,20 +235,33 @@ try:
                 wait(ready)
                 check_gpu(software or not gpu_access)
                 assert not state(sid)['settings_pending']
-            if gpu_access and distro == 'arch':
-                for broken, message in ((dict(selected, id='missing-gpu'), 'unavailable'), (dict(selected, minor=999), 'mapping changed')):
+            if gpu_access:
+                for broken in (dict(selected, id='missing-gpu'), dict(selected, minor=999)):
                     api('/sessions/'+sid+'/stop','POST')
-                    with database(data) as db: db.execute('UPDATE sessions SET gpu=? WHERE id=?', [json.dumps(broken),sid])
-                    api('/sessions/'+sid+'/start','POST')
-                    wait(lambda:state(sid)['status'] == 'failed')
-                    assert message in state(sid)['error'], state(sid)
-                    current = json.loads(subprocess.check_output(['docker','inspect',name]))[0]
-                    assert current['Id'] == info['Id'] and not current['State']['Running']
-                    with database(data) as db: db.execute('UPDATE sessions SET gpu=? WHERE id=?', [json.dumps(selected),sid])
-                    api('/sessions/'+sid+'/stop','POST')
+                    with database(data) as db:
+                        configured = json.loads(db.execute('SELECT configured FROM sessions WHERE id=?', [sid]).fetchone()[0])
+                        configured['gpu'] = broken
+                        db.execute('UPDATE sessions SET gpu=?,configured=? WHERE id=?', [json.dumps(broken),json.dumps(configured),sid])
+                    previous = info['Id']
                     api('/sessions/'+sid+'/start','POST')
                     wait(ready)
-                print(distro+': missing GPU and changed device mapping fail without substitution or recreation',flush=True)
+                    info = json.loads(subprocess.check_output(['docker','inspect',name]))[0]
+                    assert info['Id'] != previous
+                    check_gpu(os.environ.get('PROXY_BROWSER_SOFTWARE') == '1')
+                print(distro+': missing GPU and changed device mapping select compatible hardware and recreate',flush=True)
+                if selected['driver'] != 'nvidia':
+                    desired = {key:state(sid)[key] for key in ('name','screen_size','kiosk','startup_command','packages','docker_args','gpu_access','gpu_id','software_encoding')}
+                    for access in (False, True):
+                        desired.update(gpu_access=access, gpu_id=selected['id'] if access else None, software_encoding=not access)
+                        api('/sessions/'+sid+'/settings','PUT',desired)
+                        previous = info['Id']
+                        api('/sessions/'+sid+'/relaunch','POST')
+                        wait(ready)
+                        info = json.loads(subprocess.check_output(['docker','inspect',name]))[0]
+                        assert info['Id'] != previous
+                        gpu_access = access
+                        check_gpu(not access)
+                    print(distro+': GPU to software to GPU rendering preserves the installation',flush=True)
             print(distro+': GPU devices, Vulkan client access, encoding flags/logs and Start/Relaunch passed',flush=True)
         if older := os.environ.get('PROXY_UPGRADE_FROM'):
             asset=(f'elsewhere-{older}-1-x86_64.pkg.tar.zst' if distro=='arch' else
@@ -354,6 +367,10 @@ finally:
         except Exception:
             subprocess.run(['docker','rm','-f','innkeeper-'+sid],capture_output=True)
             subprocess.run(['docker','volume','rm','innkeeper-'+sid+'-data'],capture_output=True)
+    for sid in created:
+        images = subprocess.check_output(['docker','image','ls','-q','--filter','label=io.innkeeper.snapshot=true','--filter','label=io.innkeeper.session='+sid], text=True).splitlines()
+        for image in dict.fromkeys(images):
+            subprocess.run(['docker','image','rm',image],capture_output=True)
     manager.terminate()
     manager.wait(timeout=10)
     print((work/'manager.log').read_text())

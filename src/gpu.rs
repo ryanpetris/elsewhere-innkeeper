@@ -84,19 +84,32 @@ pub fn select(devices: &[Gpu], access: bool, id: Option<&str>) -> Result<Option<
     ))
 }
 
-impl Gpu {
-    pub fn validate(&self) -> Result<()> {
-        let (devices, _) = discover();
-        let current = devices.iter().find(|g| g.id == self.id).context(
-            "Selected GPU is unavailable. Restore the device, then Stop and Start this session.",
-        )?;
-        ensure!(
-            current == self,
-            "Selected GPU's driver or device mapping changed. Create a new session for this GPU."
-        );
-        Ok(())
-    }
+pub fn compatible(nvidia: bool, gpu: Option<&Gpu>) -> Result<()> {
+    ensure!(
+        gpu.is_some_and(Gpu::nvidia) == nvidia,
+        "NVIDIA sessions require an NVIDIA GPU; other sessions require a non-NVIDIA GPU or software rendering."
+    );
+    Ok(())
+}
 
+pub fn resolve(
+    devices: &[Gpu],
+    nvidia: bool,
+    access: bool,
+    id: Option<&str>,
+) -> Result<Option<Gpu>> {
+    if !access {
+        compatible(nvidia, None)?;
+        return Ok(None);
+    }
+    let eligible = |g: &&Gpu| g.nvidia() == nvidia;
+    let selected = devices.iter().filter(eligible).find(|g| Some(g.id.as_str()) == id)
+        .or_else(|| devices.iter().find(eligible))
+        .context("No compatible GPU is available. Restore a compatible GPU before starting this session.")?;
+    Ok(Some(selected.clone()))
+}
+
+impl Gpu {
     pub fn nvidia(&self) -> bool {
         self.driver == "nvidia"
     }
@@ -129,6 +142,28 @@ mod tests {
         );
         assert!(select(&devices, true, Some("/etc/passwd")).is_err());
         assert!(select(&[], true, None).is_err());
+        assert!(compatible(true, Some(&devices[0])).is_err());
+        assert!(compatible(true, None).is_err());
+        assert!(compatible(false, Some(&devices[1])).is_err());
+        assert_eq!(
+            resolve(&devices, true, true, Some("missing")).unwrap(),
+            Some(devices[1].clone())
+        );
+        assert_eq!(
+            resolve(&devices, false, true, Some("missing")).unwrap(),
+            Some(devices[0].clone())
+        );
+        assert!(resolve(&devices[..1], true, true, None).is_err());
+        assert!(resolve(&devices[1..], false, true, None).is_err());
+        assert!(resolve(&[], false, true, None).is_err());
+        assert_eq!(resolve(&[], false, false, None).unwrap(), None);
+        let mut renumbered = devices[0].clone();
+        renumbered.node = "/dev/dri/renderD130".into();
+        renumbered.minor = 130;
+        assert_eq!(
+            resolve(&[renumbered.clone()], false, true, Some(&renumbered.id)).unwrap(),
+            Some(renumbered)
+        );
         assert!(select(&devices, false, Some("0000:01:00.0")).is_err());
         assert_eq!(select(&devices, false, None).unwrap(), None);
     }

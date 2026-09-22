@@ -34,7 +34,7 @@ export interface UserInput {
   password: string;
 }
 export type UserUpdate = Omit<UserInput, 'password'> & { enabled: boolean };
-export type SessionSettings = Pick<SessionProfile, 'name' | 'screen_size' | 'kiosk' | 'software_encoding' | 'startup_command'>;
+export type SessionSettings = Omit<SessionProfile, 'distribution'>;
 export interface Gpu {
   id: string;
   driver: string;
@@ -67,6 +67,7 @@ interface SessionSummary {
 }
 interface ManagerFields extends Omit<SessionProfile, 'name' | 'distribution'> {
   gpu: Gpu | null;
+  nvidia: boolean;
   settings_pending: boolean;
   repair_available: boolean;
   version_error: string | null;

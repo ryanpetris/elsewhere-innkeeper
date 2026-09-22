@@ -265,7 +265,7 @@ export function App() {
       case 'session-new':
         return <NewSessionPage api={api} user={user} refresh={refresh} loaded={loaded} gpus={gpus} gpuErrors={gpuErrors} />;
       case 'session-settings':
-        return <SessionSettingsPage key={route.id} id={route.id} sessions={sessions} loaded={loaded} api={api} refresh={refresh} />;
+        return <SessionSettingsPage user={user} gpus={gpus} gpuErrors={gpuErrors} key={route.id} id={route.id} sessions={sessions} loaded={loaded} api={api} refresh={refresh} />;
       case 'account':
         return <AccountPage api={api} user={user} changed={setUser} />;
       case 'users':

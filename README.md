@@ -47,7 +47,7 @@ browser's own back and forward buttons.
 | `/` | The workspace: every session you can reach, as a grid or a list |
 | `/sessions/new` | Create a session |
 | `/sessions/<id>` | One session: preview, configuration, runtime, logs, sharing, and its actions |
-| `/sessions/<id>/settings` | Change that session's name, screen size, kiosk mode, software encoding, and startup command |
+| `/sessions/<id>/settings` | Change session settings, packages, Docker options, and GPU selection |
 | `/account` | Your display name and password |
 | `/users` | Every account (Administrators) |
 | `/users/new` | Create an account (Administrators) |
@@ -270,9 +270,10 @@ and encoding; GPU-enabled applications can still access the other exposed GPUs.
 The Compose file mounts `/dev/dri` for discovery. With `docker run`, mount
 `/dev/dri:/dev/dri:ro` and retain access to the host GPU metadata under `/sys`.
 The Docker daemon must run on the same host. Native installations discover these devices directly.
-The selected GPU identity and device mapping are fixed at creation. If a driver change or reboot
-changes the device mapping, restore it and use Stop then Start, or create a new session; Innkeeper does not silently select
-another GPU or recreate the container.
+Innkeeper resolves the selected GPU before startup. If it is unavailable, the first compatible
+GPU is selected and saved. Changed GPU mappings recreate the container from a snapshot. NVIDIA
+sessions require NVIDIA GPUs; other sessions support non-NVIDIA GPUs and software rendering.
+If GPU access is enabled and no compatible GPU is available, startup fails before replacing anything.
 
 Intel and AMD sessions use the image's VA-API and Vulkan drivers. NVIDIA sessions use the host's
 NVIDIA driver through NVIDIA Container Toolkit. Install the host driver with DRM modesetting,
@@ -324,8 +325,8 @@ CPU rendering and encoding. GPU access grants the desktop user the required devi
 
 Creation installs Innkeeper's pinned Elsewhere package. Start and Relaunch keep the installed
 package and refresh the container entrypoint, desktop startup script, and launch settings.
-Existing sessions retain their original Docker devices, runtime and driver capabilities. An Elsewhere
-package upgrade cannot add NVIDIA injection or GPU access; create a session with the intended GPU configuration.
+GPU, package-list and Docker option changes apply through container replacement on Start or Relaunch.
+The session retains its installed Elsewhere version. NVIDIA compatibility and distribution are fixed at creation.
 
 ### Verified GPU combinations
 
@@ -383,12 +384,10 @@ shell expansion. Docker validates option values; a rejected value appears in the
 session's startup error. Seccomp profile paths refer to files where Innkeeper's Docker
 client runs. For containerized Innkeeper, mount custom seccomp profiles into that container.
 
-Docker options apply when the session container is created and remain in effect through
-Start, Relaunch, Upgrade, Downgrade, Reinstall, and Innkeeper restarts. They are read-only in Edit
-Settings and are separate from pending desktop settings. Create a new session to use
-different Docker options.
+Administrators can edit Docker options. Changes recreate the container on Start or Relaunch,
+using a snapshot of its filesystem. Other managers retain the existing options when saving settings.
 
-**GPU access** lets the desktop and applications use host GPUs. It is set at creation and defaults to on when a render device is discovered. Choose the GPU for Elsewhere in the GPU selector. Disabling access creates a session without GPU devices.
+**GPU access** lets the desktop and applications use host GPUs. It defaults to on when a render device is discovered. Non-NVIDIA sessions can switch GPU access on or off; NVIDIA sessions require an NVIDIA GPU. Choose the GPU for Elsewhere in the GPU selector. Disabling access creates a session without GPU devices.
 
 **Software video encoding** uses CPU encoders for the viewer stream while retaining GPU access for applications when enabled. The desktop runs at 30 Hz with software encoding. This launch setting applies on Start or Relaunch and does not recreate the container.
 
@@ -398,24 +397,45 @@ different Docker options.
 | On | On | GPU rendering and CPU encoding |
 | Off | On automatically | Software rendering and CPU encoding |
 
-Profiles and `POST /api/sessions` accept `gpu_access` and `software_encoding` booleans and a nullable `gpu_id` from the `gpus` array returned by `GET /api/sessions`. Omit `gpu_id` to select the first discovered device. Explicit unknown IDs are rejected. With GPU access off, `gpu_id` must be null or omitted. Session responses include `gpu_id` and the saved `gpu` device description. Omitted GPU access follows host availability; omitted software encoding is off when GPU access is on. Without GPU access, software encoding is always saved as on. Edit Settings and `PUT /api/sessions/{id}/settings` can change `software_encoding`; GPU access remains fixed for that container.
+Profiles and `POST /api/sessions` accept `gpu_access` and `software_encoding` booleans and a nullable `gpu_id` from the `gpus` array returned by `GET /api/sessions`. Omit `gpu_id` to select the first discovered device. Explicit unknown IDs are rejected. With GPU access off, `gpu_id` must be null or omitted. Session responses include `gpu_id` and the saved `gpu` device description. Omitted GPU access follows host availability; omitted software encoding is off when GPU access is on. Without GPU access, software encoding is always saved as on. Edit Settings and `PUT /api/sessions/{id}/settings` can change GPU access and selection within the session's NVIDIA or non-NVIDIA category. An unchanged saved GPU may be unavailable when editing; startup resolves it again.
 
 Use **Edit Settings** on a running or stopped session to change its name, screen size,
-kiosk mode, software encoding, or startup command. **Save Changes** updates the name immediately and saves the
-other settings for the next launch. It does not interrupt the desktop. Distribution
-and extra packages are set at creation.
+kiosk mode, software encoding, startup command, extra packages, GPU access and selection, or Docker options.
+**Save Changes** updates the name immediately and saves other settings for the next launch.
+Distribution stays fixed. Package additions install if absent; removing an entry leaves installed software intact.
 
-**Settings pending** means saved launch settings differ from the last successful launch.
-The indicator survives an Innkeeper restart and clears if edits are reverted or a launch
-successfully applies them. **Relaunch** appears on a running session while settings are pending;
-use it, or **Start** on a stopped session, to apply them. Relaunch disconnects the desktop and closes running
-applications. Save edits before relaunching. The container, installed software, home
-directory, connection tokens, and port are retained. A failed launch retains saved settings
-for retry through Stop and Start. Settings cannot be saved during preparation or failure;
-stop a failed session before editing it.
+**Settings pending** means saved settings differ from the container configuration or the last
+successful desktop launch. Reverting edits clears the indicator. **Relaunch** disconnects the desktop
+and closes applications; **Start** applies changes to a stopped session. Both retain installed software,
+system files, the home directory, connection tokens and port. GPU, package-list and Docker option
+changes stop and snapshot the container, remove it, and create a replacement from the snapshot.
+Screen size, kiosk, encoding and startup-command changes reuse the container. Maintenance that
+starts a container also applies pending container settings. Replacement starts a new Docker log;
+the previous container's log is discarded.
 
-The authenticated API accepts `PUT /api/sessions/{id}/settings` with all five fields:
-`name`, `screen_size`, `kiosk`, `software_encoding`, and `startup_command`. Use `null` for dynamic screen sizing,
+Installing additional packages uses the distribution package manager; Arch synchronizes and upgrades
+system packages to avoid a partial upgrade. Existing packages are never uninstalled by editing the list.
+
+Snapshots retain tags beginning with `innkeeper-snapshot-`, with the session ID in the repository
+name and a unique snapshot ID in the tag. Labels `io.innkeeper.snapshot=true`, `io.innkeeper.session`,
+`io.innkeeper.snapshot-source`, `io.innkeeper.snapshot-id`, and `io.innkeeper.installation` identify their purpose and owner.
+List them with `docker image ls --filter label=io.innkeeper.snapshot=true` and inspect labels with
+`docker image inspect <image>`. Innkeeper retains snapshots after replacement and session destruction;
+remove individual images after the session is destroyed and you no longer need its system files.
+An interrupted replacement may depend on a snapshot that Docker considers unused. Do not remove
+that image or run `docker image prune -a` or `docker system prune -a` while recovery is pending.
+Treat a failed replacement as pending until the session successfully starts again. Default dangling-image pruning keeps tagged snapshots.
+Reverting to the configured settings abandons an unfinished replacement if the original container
+still exists. Any snapshot from that attempt remains tagged.
+Snapshots preserve system files outside mounted volumes; the home volume is reattached rather than
+copied. Later snapshots share layers, so removing old tags does not compact a session's history.
+
+An interrupted replacement keeps its snapshot reference. Stop and Start retries the operation,
+including after Innkeeper restarts. A failed commit retains the original container. Stop a failed session to edit settings before retrying from its saved snapshot. Snapshot operations have a 30-minute timeout.
+
+The authenticated API accepts `PUT /api/sessions/{id}/settings` with all fields:
+`name`, `screen_size`, `kiosk`, `software_encoding`, `startup_command`, `packages`, `docker_args`,
+`gpu_access`, and `gpu_id`. Use `null` for dynamic screen sizing,
 `false` to disable kiosk mode, and an empty string to clear the startup command.
 Unknown or missing fields are rejected. `POST /api/sessions/{id}/relaunch` relaunches a
 running session using saved settings. Session responses include `settings_pending`.

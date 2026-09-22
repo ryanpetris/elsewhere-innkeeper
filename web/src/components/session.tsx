@@ -38,6 +38,7 @@ const STAGES: Record<string, string> = {
   download: 'Downloading Elsewhere',
   image: 'Pulling the base image',
   container: 'Creating the container',
+  snapshot: 'Saving the session filesystem',
   setup: 'Preparing the system',
   upgrade: 'Updating system packages',
   elsewhere: 'Installing Elsewhere',
